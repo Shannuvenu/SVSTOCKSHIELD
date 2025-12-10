@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# VS Code
+.vscode/
+
+# Data / test CSVs
+*.csv
+!sample_*.csv  # (optional: if you want to keep some small sample csvs)
+
+# OS junk
+.DS_Store
+Thumbs.db
