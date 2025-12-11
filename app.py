@@ -1,86 +1,99 @@
-# app.py - SV STOCKSHIELD (updated formatting + nicer fundamentals UI)
-# Requirements: streamlit, yfinance, pandas, plotly
-# pip install streamlit yfinance pandas plotly
+# app.py — S V STOCKSHIELD (stable, fixed duplicate IDs, robust charts, black+red UI, logo slot)
+# Requirements:
+# pip install streamlit yfinance pandas plotly requests numpy python-dotenv
+# Optional for social hype: pip install snscrape vaderSentiment
 
+import os
 import time
 from io import BytesIO
-import math
+from typing import Optional, Tuple, Dict, Any, List
 
 import pandas as pd
-import plotly.graph_objects as go
+import numpy as np
 import streamlit as st
 import yfinance as yf
+import plotly.graph_objects as go
+import requests
 
-# ---------------- PAGE CONFIG ----------------
+# Optional imports for social hype; app still runs without these
+try:
+    import snscrape.modules.twitter as sntwitter
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+    SNSSCRAPE_AVAILABLE = True
+except Exception:
+    SNSSCRAPE_AVAILABLE = False
+
+# ---------------- CONFIG & KEYS ----------------
 st.set_page_config(page_title="S V STOCKSHIELD", page_icon="📈", layout="wide")
 
-# ---------------- GLOBAL STYLE ----------------
+# load FMP API key from streamlit secrets or environment
+FMP_API_KEY = None
+try:
+    if "FMP" in st.secrets and "KEY" in st.secrets["FMP"]:
+        FMP_API_KEY = st.secrets["FMP"]["KEY"]
+except Exception:
+    pass
+if not FMP_API_KEY:
+    FMP_API_KEY = os.getenv("FMP_API_KEY", None)
+
+BASE_FMP = "https://financialmodelingprep.com/api/v3"
+
+
+def call_fmp(path: str, params: dict = None):
+    if not FMP_API_KEY:
+        return None
+    try:
+        params = params or {}
+        params["apikey"] = FMP_API_KEY
+        url = f"{BASE_FMP}/{path}"
+        r = requests.get(url, params=params, timeout=10)
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        return None
+    return None
+
+
+# ---------------- STYLE / THEME ----------------
 st.markdown(
     """
     <style>
     :root {
-        --heading-font: "Georgia", "Times New Roman", serif;
-        --body-font: "Times New Roman", serif;
+        --bg: #000000;
+        --card: #070707;
+        --muted: #9aa0a6;
+        --accent: #d32f2f;
+        --panel: #0b0b0b;
+        --glass: rgba(255,255,255,0.03);
     }
-    html, body, [class*="css"]  {
-        font-family: var(--body-font);
-        background-color: #050608 !important;
-        color: #f5f5f5;
+    html, body, [class*="css"] {
+        background: var(--bg) !important;
+        color: #ffffff;
+        font-family: Inter, "Segoe UI", Roboto, "Helvetica Neue", Arial;
     }
-    h1,h2,h3,h4 { font-family: var(--heading-font); letter-spacing: 0.05rem; }
-    .big-title { font-size: 2.6rem; font-weight:700; color:#ffffff; letter-spacing:0.12rem; }
-    .subtitle { font-size:1rem; color:#bbbbbb; margin-bottom:10px; }
-    .metric-card { padding:0.9rem 1.1rem; border-radius:0.8rem; background:#101118; border:1px solid #23252f; box-shadow: 0 0 18px rgba(0,0,0,0.6); }
-    .metric-label { font-size:0.85rem; color:#9a9a9a; text-transform:uppercase; }
-    .metric-value { font-size:1.6rem; font-weight:bold; color:#ffffff; }
-    .metric-sub { font-size:0.85rem; color:#c7c7c7; }
-    .risk-high { color:#ff4d4d !important; font-weight:700; font-size:1.4rem; }
-    .risk-medium { color:#ffcc33 !important; font-weight:700; font-size:1.4rem; }
-    .risk-low { color:#33dd77 !important; font-weight:700; font-size:1.4rem; }
-    .manip-badge { padding:0.2rem 0.7rem; border-radius:999px; font-size:0.85rem; display:inline-block; }
-    .manip-low { background: rgba(51,221,119,0.18); border:1px solid #33dd77; color:#c7ffe0; }
-    .manip-medium { background: rgba(255,204,51,0.18); border:1px solid #ffcc33; color:#fff1c4; }
-    .manip-high { background: rgba(255,77,77,0.2); border:1px solid #ff4d4d; color:#ffd6d6; }
-    .fund-key { font-weight:700; color:#dcdcdc; }
-    .fund-val { color:#ffffff; font-size:1rem; }
-    .fund-card { padding:0.6rem 0.9rem; border-radius:8px; background:#0f1113; border:1px solid #222327; }
-    footer { visibility:hidden; }
+    .big-title { font-size: 28px; font-weight:800; color:#fff; }
+    .subtitle { color: #bdbdbd; margin-bottom: 8px; }
+    .metric-card { background: var(--card); padding: 12px; border-radius: 10px; border: 1px solid #111; }
+    .fund-card { background: var(--panel); padding: 10px; border-radius:8px; border:1px solid #111; }
+    .manip-badge { padding:6px 10px; border-radius:999px; font-weight:700; }
+    .risk-high { color: #ff4d4d; font-weight:700; }
+    .risk-medium { color: #ffcc33; font-weight:700; }
+    .risk-low { color: #33dd77; font-weight:700; }
+    .footer { color:#9aa0a6; margin-top:16px; text-align:center; }
+    .muted { color: var(--muted); }
+    .stButton>button { background: transparent; border: 1px solid #222; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# ---------------- Utility helpers ----------------
-
-
-def df_to_csv_bytes(df: pd.DataFrame) -> bytes:
-    return df.to_csv(index=True).encode("utf-8")
-
-
-def make_template_bytes(kind: str) -> bytes:
-    if kind == "fii":
-        df = pd.DataFrame({"Date": ["2025-12-01", "2025-12-02"], "FII": [1000, -500], "DII": [-200, 300], "Net": [800, -200]})
-        return df_to_csv_bytes(df)
-    if kind == "hype":
-        df = pd.DataFrame({"Date": ["2025-12-01", "2025-12-02"], "HypeScore": [45, 60]})
-        return df_to_csv_bytes(df)
-    if kind == "options":
-        df = pd.DataFrame({"Strike": [1500, 1600], "CE_OI": [10000, 5000], "PE_OI": [8000, 12000], "Change_CE_OI": [200, -100], "Change_PE_OI": [-50, 300]})
-        return df_to_csv_bytes(df)
-    return b""
-
-
+# ---------------- HELPERS ----------------
 def format_indian_number(n):
-    """Return number formatted using Indian units:
-       - >= 1e7 -> Crore (Cr) with 2 decimals
-       - >= 1e5 -> Lakh (L) with 2 decimals
-       - else use normal with commas.
-    """
     try:
         if n is None:
             return "-"
-        if isinstance(n, (str, bool)):
-            return str(n)
+        if isinstance(n, str):
+            return n
         n = float(n)
         absn = abs(n)
         sign = "-" if n < 0 else ""
@@ -88,244 +101,79 @@ def format_indian_number(n):
             return f"{sign}{absn/1e7:,.2f} Cr"
         if absn >= 1e5:
             return f"{sign}{absn/1e5:,.2f} L"
-        # fallback with commas
         return f"{sign}{int(round(absn)):,}"
     except Exception:
         return str(n)
 
 
-def human_readable_ratio(x):
+def df_to_csv_bytes(df: pd.DataFrame) -> bytes:
+    buf = BytesIO()
+    df.to_csv(buf, index=True)
+    return buf.getvalue()
+
+
+def period_mapping_for_yf(h: str) -> str:
+    m = {"1m": "1mo", "6m": "6mo", "1y": "1y", "3y": "3y", "5y": "5y", "10y": "10y", "max": "max"}
+    return m.get(h, "1y")
+
+
+def compute_cagr_from_series(idx: pd.Index, vals: pd.Series) -> Optional[float]:
     try:
-        if x is None:
-            return "-"
-        return f"{x:.2f}" if isinstance(x, (float, int)) else str(x)
+        if len(vals) < 2:
+            return None
+        start = float(vals.iloc[0])
+        end = float(vals.iloc[-1])
+        days = (pd.to_datetime(idx[-1]) - pd.to_datetime(idx[0])).days
+        years = days / 365.25 if days > 0 else None
+        if start <= 0 or (years is None) or years <= 0:
+            return None
+        return (end / start) ** (1 / years) - 1
     except Exception:
-        return str(x)
+        return None
 
 
-# ----------------- FETCH INDEX SNAPSHOT -----------------
+# ---------------- HEADER (logo slot) ----------------
+logo_path = "assets/logo-red.png"
+col_logo, col_title = st.columns([0.12, 1])
+with col_logo:
+    if os.path.exists(logo_path):
+        st.image(logo_path, width=72)
+with col_title:
+    st.markdown('<div class="big-title">📈 S V STOCKSHIELD</div>', unsafe_allow_html=True)
+    st.markdown('<div class="subtitle">Live Candlesticks • Operator Manipulation Scanner • Watchlist & Forensics</div>', unsafe_allow_html=True)
 
+st.write("")
 
-def fetch_index_snapshot(ticker: str):
+# ---------------- Top index cards ----------------
+def fetch_index_snapshot(ticker: str) -> Optional[Tuple[float, float, float, str]]:
     try:
         data = yf.download(ticker, period="5d", interval="1d", progress=False)
-        if len(data) < 2:
+        if data.shape[0] < 2:
             return None
         last = float(data["Close"].iloc[-1])
         prev = float(data["Close"].iloc[-2])
         change = last - prev
-        pct = (change / prev) * 100
+        pct = (change / prev) * 100 if prev != 0 else 0
         emoji = "🟢" if change >= 0 else "🔴"
         return last, change, pct, emoji
     except Exception:
         return None
 
 
-# ---------------- Risk helpers (unchanged core) ----------------
-
-
-def classify_risk(score: int) -> str:
-    if score >= 70:
-        return "High"
-    if score >= 40:
-        return "Medium"
-    return "Low"
-
-
-def calc_risk_from_raw(df_raw: pd.DataFrame) -> pd.DataFrame:
-    df = df_raw.copy()
-    df["PrevClose"] = df["Close"].shift(1)
-    df["PctChange"] = ((df["Close"] - df["PrevClose"]) / df["PrevClose"].abs()) * 100
-    df["VolAvg5"] = df["Volume"].rolling(5).mean()
-    df["VolumeSpike"] = df["Volume"] > 1.5 * df["VolAvg5"]
-    df["PriceSpike"] = df["PctChange"].abs() > 2.0
-    df["Up"] = df["Close"] > df["PrevClose"]
-    df["Streak"] = df["Up"].groupby((df["Up"] != df["Up"].shift()).cumsum()).cumsum()
-    df["TrendRun"] = df["Streak"] >= 2
-    df["RiskScore"] = df["VolumeSpike"].astype(int) * 30 + df["PriceSpike"].astype(int) * 40 + df["TrendRun"].astype(int) * 30
-    df["RiskLevel"] = df["RiskScore"].apply(classify_risk)
-    return df
-
-
-def compute_integrity_score(df: pd.DataFrame) -> int:
-    if df.empty:
-        return 0
-    vol = df["PctChange"].abs().mean()
-    high_days = (df["RiskScore"] >= 70).mean()
-    med_days = (df["RiskScore"] >= 40).mean()
-    raw = 100 - (vol * 2 + high_days * 100 + med_days * 40)
-    return max(0, min(100, int(round(raw))))
-
-
-def detect_fake_breakout(df: pd.DataFrame) -> bool:
-    if len(df) < 15:
-        return False
-    recent_window = min(20, len(df))
-    recent = df.tail(recent_window)
-    prior = df.iloc[:-recent_window]
-    if prior.empty:
-        return False
-    prev_high = prior["Close"].max()
-    recent_high = recent["Close"].max()
-    last_close = df["Close"].iloc[-1]
-    breakout = recent_high > prev_high * 1.02
-    failure = breakout and last_close < prev_high * 0.99
-    return bool(failure)
-
-
-def detect_retail_trap(df: pd.DataFrame) -> bool:
-    if len(df) < 5:
-        return False
-    last = df.iloc[-1]
-    body = abs(last["Close"] - last["Open"])
-    upper_wick = last["High"] - max(last["Close"], last["Open"])
-    lower_wick = min(last["Close"], last["Open"]) - last["Low"]
-    recent_run = bool(df["Close"].iloc[-2] > df["Close"].iloc[-5]) if len(df) >= 5 else False
-    trap = (last["Close"] < last["Open"]) and (upper_wick > body * 1.5) and (upper_wick > abs(lower_wick) * 1.2) and recent_run
-    return bool(trap)
-
-
-def whale_footprint(df: pd.DataFrame) -> int:
-    if df.empty:
-        return 0
-    last = df.iloc[-1]
-    avg_vol = df["Volume"].rolling(20).mean().iloc[-1] if len(df) >= 20 else df["Volume"].mean()
-    if pd.isna(avg_vol) or avg_vol == 0:
-        return 0
-    volume_factor = last["Volume"] / avg_vol
-    body = abs(last["Close"] - last["Open"])
-    range_ = last["High"] - last["Low"]
-    small_body = range_ > 0 and body < range_ * 0.35
-    if volume_factor > 3 and small_body:
-        return 85
-    if volume_factor > 2 and small_body:
-        return 65
-    if volume_factor > 1.5:
-        return 45
-    return 15
-
-
-def price_volume_divergence(df: pd.DataFrame) -> tuple:
-    if df.empty:
-        return 0, "No signal"
-    last = df.iloc[-1]
-    vol_avg = df["Volume"].rolling(10).mean().iloc[-1] if len(df) >= 10 else df["Volume"].mean()
-    if pd.isna(vol_avg) or vol_avg == 0:
-        return 0, "No signal"
-    msg = "No major divergence"
-    score = 20
-    if last["PctChange"] > 1.0 and last["Volume"] < vol_avg * 0.8:
-        msg = "Price up but volume down → weak rally / possible operator push"
-        score = 70
-    elif last["PctChange"] < -1.0 and last["Volume"] > vol_avg * 1.2:
-        msg = "Price down with heavy volume → panic selling / strong distribution"
-        score = 75
-    elif last["PctChange"] > 1.0 and last["Volume"] > vol_avg * 1.2:
-        msg = "Price and volume both strong → genuine momentum"
-        score = 40
-    return score, msg
-
-
-def operator_fingerprint_scores(df: pd.DataFrame) -> dict:
-    scores = {"Pump-Dump": 10, "Accumulation → Spike": 10, "Volume Crash Sell-off": 10, "Laddering Run-up": 10}
-    if len(df) < 20:
-        return scores
-    window = min(60, len(df))
-    seg = df.tail(window).reset_index(drop=True)
-    start_price = seg["Close"].iloc[0]
-    max_price = seg["Close"].max()
-    end_price = seg["Close"].iloc[-1]
-    peak_idx = seg["Close"].idxmax()
-    rise = (max_price / start_price) - 1 if start_price != 0 else 0
-    fall_from_peak = (max_price - end_price) / max_price if max_price != 0 else 0
-    if rise > 0.3 and fall_from_peak > 0.2 and peak_idx > window // 3:
-        scores["Pump-Dump"] = 80
-    elif rise > 0.2 and fall_from_peak > 0.1:
-        scores["Pump-Dump"] = 50
-    half = window // 2
-    early = seg.iloc[:half]
-    late = seg.iloc[half:]
-    vol_early = early["Volume"].mean() if not early.empty else 0
-    vol_late = late["Volume"].mean() if not late.empty else 0
-    risk_early = early["RiskScore"].mean() if not early.empty else 0
-    risk_late = late["RiskScore"].mean() if not late.empty else 0
-    price_spike = (late["Close"].max() / early["Close"].mean()) - 1 if early["Close"].mean() != 0 else 0
-    if vol_late > vol_early * 1.5 and price_spike > 0.15 and risk_late > risk_early * 1.5:
-        scores["Accumulation → Spike"] = 80
-    elif vol_late > vol_early * 1.3 and price_spike > 0.1:
-        scores["Accumulation → Spike"] = 50
-    big_down = seg[seg["PctChange"] < -4]
-    if not big_down.empty and (big_down["Volume"] > seg["Volume"].mean() * 1.5).any():
-        scores["Volume Crash Sell-off"] = 75
-    green = seg["Close"] > seg["PrevClose"]
-    streaks = green.groupby((green != green.shift()).cumsum()).cumsum()
-    long_streak = streaks.max() if not streaks.empty else 0
-    if long_streak >= 5 and rise > 0.15:
-        scores["Laddering Run-up"] = 70
-    return scores
-
-
-def manipulation_index(latest_risk, integrity, whale_score, div_score, fake_bo, trap):
-    comps = [min(int(latest_risk), 100), 100 - int(integrity), int(whale_score), int(div_score)]
-    if fake_bo:
-        comps.append(80)
-    if trap:
-        comps.append(70)
-    return int(round(sum(comps) / len(comps))) if comps else 0
-
-
-def manipulation_label(idx: int):
-    if idx >= 70:
-        return "High", "manip-high"
-    if idx >= 40:
-        return "Medium", "manip-medium"
-    return "Low", "manip-low"
-
-
-def smart_explanation(symbol, latest_row, integrity, whale_score, div_msg, fake_bo, trap, manip_idx):
-    lines = []
-    lines.append(f"{symbol.upper()} closed at **{latest_row['Close']:.2f}**, with a daily move of **{latest_row['PctChange']:.2f}%**.")
-    lines.append(f"Overall **integrity score** is **{integrity}/100** (higher = cleaner price action).")
-    if whale_score >= 70:
-        lines.append("🔍 **Whale footprint**: very strong — big player activity detected.")
-    elif whale_score >= 45:
-        lines.append("🔍 **Whale footprint**: moderate — some large orders visible.")
-    else:
-        lines.append("🔍 **Whale footprint**: weak — mostly normal participation.")
-    lines.append(f"📊 **Price–volume view**: {div_msg}.")
-    if fake_bo:
-        lines.append("⚠️ Pattern resembles a **failed breakout** – breakout traders may be trapped.")
-    if trap:
-        lines.append("⚠️ Latest candle looks like a **retail trap** (long upper wick after a rally).")
-    if manip_idx >= 70:
-        lines.append("🧨 Combined indicators point to **high probability of operator-driven behaviour**. Fresh entries should be very cautious.")
-    elif manip_idx >= 40:
-        lines.append("🟠 Signals indicate **moderate manipulation risk** – good for observation, not blind entries.")
-    else:
-        lines.append("🟢 No strong manipulation cluster right now – behaviour is closer to organic trading.")
-    return "\n\n".join(lines)
-
-
-# ------------------------ HEADER --------------------------
-st.markdown('<div class="big-title">📈 S V STOCKSHIELD</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">Live Candlesticks • Operator Manipulation Scanner • Watchlist & Forensics</div>', unsafe_allow_html=True)
-st.write("")
-
-# ------------------------ INDEX CARDS ---------------------
 c1, c2, c3, c4 = st.columns([1, 1, 1, 0.7])
 indices = {"📉 NIFTY 50": "^NSEI", "📊 SENSEX": "^BSESN", "🏦 BANKNIFTY": "^NSEBANK"}
 for (label, ticker), col in zip(indices.items(), [c1, c2, c3]):
     snap = fetch_index_snapshot(ticker)
     with col:
         st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
-        st.markdown(f"<div class='metric-label'>{label}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='font-size:12px;color:#bdbdbd'>{label}</div>", unsafe_allow_html=True)
         if snap is None:
-            st.markdown("<div class='metric-value'>—</div>", unsafe_allow_html=True)
-            st.markdown("<div class='metric-sub'>No data</div>", unsafe_allow_html=True)
+            st.markdown("<div style='font-size:16px'>—</div>", unsafe_allow_html=True)
+            st.markdown("<div class='muted'>No data</div>", unsafe_allow_html=True)
         else:
             last, change, pct, emoji = snap
-            st.markdown(f"<div class='metric-value'>{emoji} {last:,.0f}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div class='metric-sub'>{change:+.0f} ({pct:+.2f}%)</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='font-size:20px'>{emoji} {last:,.0f}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='muted'>{change:+.0f} ({pct:+.2f}%)</div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
 with c4:
@@ -333,12 +181,12 @@ with c4:
 
 st.write("")
 
-# ---------------------- TABS LAYOUT -----------------------
+# ---------------- TABS ----------------
 (tab_setup, tab_risk, tab_watch, tab_fii, tab_adv, tab_fundamentals) = st.tabs(
     ["📉 Candlesticks & Setup", "🚨 Operator Risk Scanner", "📋 Multi-Stock & Sector Risk", "💰 FII / DII Flows", "🧬 Advanced Forensics", "📚 Fundamentals"]
 )
 
-# ---------------- TAB 1 - Setup & Candles ----------------
+# ---------------- TAB 1: Candles & Setup ----------------
 with tab_setup:
     st.subheader("Chart Setup")
     col_l, col_r = st.columns([1.3, 1])
@@ -348,9 +196,11 @@ with tab_setup:
         interval = st.selectbox("Candle timeframe", ["5m", "15m", "30m", "60m", "1d"], index=4)
     with col_r:
         st.markdown("**Notes**")
-        st.markdown("- Use `.NS` for NSE, `.BO` for BSE.\n- Intraday intervals (5m..60m) work best with short periods.\n- Daily candles work with 3mo+.")
-
+        st.markdown("- Use `.NS` for NSE, `.BO` for BSE.")
+        st.markdown("- Intraday intervals (5m..60m) work best with short periods.")
+        st.markdown("- Daily candles work with 3mo+.")
     st.markdown("---")
+
     if not symbol.strip():
         st.warning("Enter a valid stock symbol to load the chart.")
     else:
@@ -359,29 +209,41 @@ with tab_setup:
         except Exception as e:
             st.error(f"Failed to fetch data: {e}")
             st.stop()
-
-        if data_raw.empty:
+        if data_raw is None or data_raw.empty:
             st.error("No data returned. Try another symbol / period / timeframe.")
             st.stop()
-
+        # flatten multiindex columns if present
         if isinstance(data_raw.columns, pd.MultiIndex):
             data_raw.columns = [c[0] for c in data_raw.columns]
-
         data = data_raw.reset_index()
         time_col = data.columns[0]
-
+        # store in session
         st.session_state["symbol"] = symbol.strip()
         st.session_state["data_raw"] = data_raw
         st.session_state["data"] = data
         st.session_state["time_col"] = time_col
 
         st.subheader("📊 Candlestick Chart")
-        fig = go.Figure(data=[go.Candlestick(x=data[time_col], open=data["Open"], high=data["High"], low=data["Low"], close=data["Close"], increasing_line_color="lime", decreasing_line_color="red")])
-        fig.update_layout(template="plotly_dark", height=520, xaxis_title="Time", yaxis_title="Price")
-        st.plotly_chart(fig, use_container_width=True)
-        with st.expander("📄 Show OHLCV data"):
-            st.dataframe(data, use_container_width=True)
+        # robust candlestick plotting
+        df_plot = data.copy()
+        if set(["Open", "High", "Low", "Close"]).issubset(df_plot.columns):
+            fig = go.Figure(data=[go.Candlestick(
+                x=df_plot[time_col],
+                open=df_plot["Open"],
+                high=df_plot["High"],
+                low=df_plot["Low"],
+                close=df_plot["Close"],
+                increasing_line_color="#33aa44",
+                decreasing_line_color="#d32f2f"
+            )])
+            fig.update_layout(template="plotly_dark", height=520, xaxis_title="Time", yaxis_title="Price")
+            st.plotly_chart(fig, use_container_width=True, key=f"top_candle_{symbol.strip()}")
+            with st.expander("📄 Show OHLCV data"):
+                st.dataframe(df_plot, use_container_width=True)
+        else:
+            st.info("Insufficient OHLC data for candlestick chart.")
 
+# ensure later tabs have data to work with
 if "data_raw" not in st.session_state:
     st.stop()
 
@@ -389,64 +251,181 @@ symbol = st.session_state["symbol"]
 data_raw = st.session_state["data_raw"]
 data = st.session_state["data"]
 time_col = st.session_state["time_col"]
+
+# ---------------- RISK HELPERS ----------------
+def calc_risk_from_raw(df_raw: pd.DataFrame) -> pd.DataFrame:
+    df = df_raw.copy().reset_index()
+    df["PrevClose"] = df["Close"].shift(1)
+    df["PctChange"] = ((df["Close"] - df["PrevClose"]) / df["PrevClose"].abs()) * 100
+    df["VolAvg5"] = df["Volume"].rolling(5).mean()
+    df["VolumeSpike"] = df["Volume"] > 1.5 * df["VolAvg5"]
+    df["PriceSpike"] = df["PctChange"].abs() > 2.0
+    df["Up"] = df["Close"] > df["PrevClose"]
+    df["Streak"] = df["Up"].groupby((df["Up"] != df["Up"].shift()).cumsum()).cumsum()
+    df["TrendRun"] = df["Streak"] >= 2
+    df["RiskScore"] = df["VolumeSpike"].astype(int) * 30 + df["PriceSpike"].astype(int) * 40 + df["TrendRun"].astype(int) * 30
+    def classify(score):
+        if score >= 70:
+            return "High"
+        if score >= 40:
+            return "Medium"
+        return "Low"
+    df["RiskLevel"] = df["RiskScore"].apply(classify)
+    return df
+
+
 df = calc_risk_from_raw(data_raw).reset_index()
 
-# ---------------- TAB 2 - Risk ----------------
+# ---------------- TAB 2: RISK ----------------
 with tab_risk:
     st.subheader("Risk Snapshot & Manipulation Meter")
     latest = df.iloc[-1]
     colA, colB, colC, colD = st.columns(4)
     with colA:
         st.markdown("**Latest Risk**")
-        css_class = ("risk-high" if latest["RiskLevel"] == "High" else "risk-medium" if latest["RiskLevel"] == "Medium" else "risk-low")
-        st.markdown(f"<div class='{css_class}'>{int(latest['RiskScore'])} ({latest['RiskLevel']})</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='font-size:20px'>{int(latest['RiskScore'])} ({latest['RiskLevel']})</div>", unsafe_allow_html=True)
     with colB:
         max_idx = df["RiskScore"].idxmax()
         max_row = df.loc[max_idx]
         st.markdown("**Peak Risk in Selected Period**")
-        st.write(f"Score **{int(max_row['RiskScore'])}** on **{max_row[time_col].date()}**")
+        st.write(f"Score **{int(max_row['RiskScore'])}** on **{pd.to_datetime(max_row[time_col]).date()}**")
+
+    def compute_integrity_score(df_local: pd.DataFrame) -> int:
+        if df_local.empty:
+            return 0
+        vol = df_local["PctChange"].abs().mean()
+        high_days = (df_local["RiskScore"] >= 70).mean()
+        med_days = (df_local["RiskScore"] >= 40).mean()
+        raw = 100 - (vol * 2 + high_days * 100 + med_days * 40)
+        return max(0, min(100, int(round(raw))))
+
+    def detect_fake_breakout(df_local: pd.DataFrame) -> bool:
+        if len(df_local) < 15:
+            return False
+        recent_window = min(20, len(df_local))
+        recent = df_local.tail(recent_window)
+        prior = df_local.iloc[:-recent_window]
+        if prior.empty:
+            return False
+        prev_high = prior["Close"].max()
+        recent_high = recent["Close"].max()
+        last_close = df_local["Close"].iloc[-1]
+        breakout = recent_high > prev_high * 1.02
+        failure = breakout and last_close < prev_high * 0.99
+        return bool(failure)
+
+    def detect_retail_trap(df_local: pd.DataFrame) -> bool:
+        if len(df_local) < 5:
+            return False
+        last = df_local.iloc[-1]
+        body = abs(last["Close"] - last["Open"])
+        upper_wick = last["High"] - max(last["Close"], last["Open"])
+        lower_wick = min(last["Close"], last["Open"]) - last["Low"]
+        recent_run = bool(df_local["Close"].iloc[-2] > df_local["Close"].iloc[-5]) if len(df_local) >= 5 else False
+        trap = (last["Close"] < last["Open"]) and (upper_wick > body * 1.5) and (upper_wick > abs(lower_wick) * 1.2) and recent_run
+        return bool(trap)
+
+    def whale_footprint(df_local: pd.DataFrame) -> int:
+        if df_local.empty:
+            return 0
+        last = df_local.iloc[-1]
+        avg_vol = df_local["Volume"].rolling(20).mean().iloc[-1] if len(df_local) >= 20 else df_local["Volume"].mean()
+        if pd.isna(avg_vol) or avg_vol == 0:
+            return 0
+        volume_factor = last["Volume"] / avg_vol
+        body = abs(last["Close"] - last["Open"])
+        range_ = last["High"] - last["Low"]
+        small_body = range_ > 0 and body < range_ * 0.35
+        if volume_factor > 3 and small_body:
+            return 85
+        if volume_factor > 2 and small_body:
+            return 65
+        if volume_factor > 1.5:
+            return 45
+        return 15
+
+    def price_volume_divergence(df_local: pd.DataFrame) -> Tuple[int, str]:
+        if df_local.empty:
+            return 0, "No signal"
+        last = df_local.iloc[-1]
+        vol_avg = df_local["Volume"].rolling(10).mean().iloc[-1] if len(df_local) >= 10 else df_local["Volume"].mean()
+        if pd.isna(vol_avg) or vol_avg == 0:
+            return 0, "No signal"
+        msg = "No major divergence"
+        score = 20
+        if last["PctChange"] > 1.0 and last["Volume"] < vol_avg * 0.8:
+            msg = "Price up but volume down → weak rally / possible operator push"
+            score = 70
+        elif last["PctChange"] < -1.0 and last["Volume"] > vol_avg * 1.2:
+            msg = "Price down with heavy volume → panic selling / strong distribution"
+            score = 75
+        elif last["PctChange"] > 1.0 and last["Volume"] > vol_avg * 1.2:
+            msg = "Price and volume both strong → genuine momentum"
+            score = 40
+        return score, msg
+
     integrity = compute_integrity_score(df)
     fake_bo = detect_fake_breakout(df)
     trap = detect_retail_trap(df)
     whale_score = whale_footprint(df)
     div_score, div_msg = price_volume_divergence(df)
-    manip_idx = manipulation_index(int(latest["RiskScore"]), integrity, whale_score, div_score, fake_bo, trap)
-    manip_label, manip_css = manipulation_label(manip_idx)
+
+    latest_risk = int(latest["RiskScore"])
+    comps = [min(latest_risk, 100), 100 - int(integrity), int(whale_score), int(div_score)]
+    if fake_bo:
+        comps.append(80)
+    if trap:
+        comps.append(70)
+    manip_idx = int(round(sum(comps) / len(comps))) if comps else 0
+    manip_label = "High" if manip_idx >= 70 else "Medium" if manip_idx >= 40 else "Low"
+
     with colC:
         st.markdown("**Integrity Score (0–100)**")
-        iclass = ("risk-low" if integrity >= 70 else "risk-medium" if integrity >= 40 else "risk-high")
-        st.markdown(f"<div class='{iclass}'>{integrity}</div>", unsafe_allow_html=True)
+        st.write(f"**{integrity}**")
     with colD:
         st.markdown("**Manipulation Index (0–100)**")
-        st.markdown(f"<span class='manip-badge {manip_css}'>{manip_idx} – {manip_label}</span>", unsafe_allow_html=True)
+        color_emoji = "🟢" if manip_idx < 40 else "🟠" if manip_idx < 70 else "🔴"
+        st.markdown(f"{color_emoji} **{manip_idx} — {manip_label}**")
 
     st.markdown("---")
     st.markdown("### 🔍 Smart Operator Summary")
-    summary_text = smart_explanation(symbol, latest, integrity, whale_score, div_msg, fake_bo, trap, manip_idx)
-    st.markdown(summary_text)
+    summary_lines = [
+        f"{symbol.upper()} closed at **{latest['Close']:.2f}**, daily move **{latest['PctChange']:.2f}%**.",
+        f"Integrity: **{integrity}/100**.",
+    ]
+    if whale_score >= 70:
+        summary_lines.append("🔍 Whale footprint: very strong — big player activity.")
+    elif whale_score >= 45:
+        summary_lines.append("🔍 Whale footprint: moderate.")
+    else:
+        summary_lines.append("🔍 Whale footprint: weak.")
+    summary_lines.append(f"📊 Price–volume: {div_msg}.")
+    if fake_bo:
+        summary_lines.append("⚠️ Pattern: looks like a failed breakout.")
+    if trap:
+        summary_lines.append("⚠️ Pattern: possible retail trap candle.")
+    if manip_idx >= 70:
+        summary_lines.append("🧨 Combined indicators → high operator-driven risk.")
+    elif manip_idx >= 40:
+        summary_lines.append("🟠 Moderate manipulation risk — observe.")
+    else:
+        summary_lines.append("🟢 No strong manipulation cluster.")
+    st.markdown("\n\n".join(summary_lines))
 
     st.markdown("### 📈 Suspicion Timeline (Risk Score)")
-    fig_risk = go.Figure(data=[go.Scatter(x=df[time_col], y=df["RiskScore"], mode="lines+markers", name="RiskScore")])
-    fig_risk.update_layout(template="plotly_dark", height=320, xaxis_title="Time", yaxis_title="Risk Score")
-    st.plotly_chart(fig_risk, use_container_width=True)
+    fig_risk = go.Figure([go.Scatter(x=df[time_col], y=df["RiskScore"], mode="lines+markers", line=dict(color="#d32f2f"))])
+    fig_risk.update_layout(template="plotly_dark", height=320)
+    st.plotly_chart(fig_risk, use_container_width=True, key=f"risk_plot_{symbol}")
 
-    st.markdown("### 🧾 Candle-wise Risk Table")
+    st.markdown("### 🔢 Candle-wise risk table")
     df_show = df[[time_col, "Close", "Volume", "PctChange", "VolumeSpike", "PriceSpike", "TrendRun", "RiskScore", "RiskLevel"]].copy()
     df_show["PctChange"] = df_show["PctChange"].round(2)
-    for col in ["VolumeSpike", "PriceSpike", "TrendRun"]:
-        df_show[col] = df_show[col].map({True: "Yes", False: "No"})
-    def highlight(row):
-        if row["RiskLevel"] == "High":
-            return ["background-color: rgba(255,0,0,0.25)"] * len(row)
-        if row["RiskLevel"] == "Medium":
-            return ["background-color: rgba(255,200,0,0.20)"] * len(row)
-        return [""] * len(row)
-    st.dataframe(df_show.style.apply(highlight, axis=1), use_container_width=True)
-    st.markdown("---")
-    st.markdown("### 📄 Download CSV")
-    st.download_button("Download risk table CSV", df_show.to_csv(index=False).encode("utf-8"), "risk_table.csv", "text/csv")
+    for coln in ["VolumeSpike", "PriceSpike", "TrendRun"]:
+        df_show[coln] = df_show[coln].map({True: "Yes", False: "No"})
+    st.dataframe(df_show, use_container_width=True)
+    st.download_button("Download risk table CSV", df_show.to_csv(index=False).encode("utf-8"), f"risk_table_{symbol}.csv", "text/csv", key=f"download_risk_table_{symbol}")
 
-# ---------------- TAB 3 - Watchlist ----------------
+# ---------------- TAB 3: WATCHLIST ----------------
 with tab_watch:
     st.subheader("Watchlist Risk & Sector View")
     watchlist_input = st.text_input("Watchlist symbols (comma separated)", value="RELIANCE.NS, TCS.NS, HDFCBANK.NS, ADANIENT.NS")
@@ -458,246 +437,667 @@ with tab_watch:
             dfw_raw = yf.download(sym, period="1mo", interval="1d", progress=False)
         except Exception:
             continue
-        if dfw_raw.empty:
+        if dfw_raw is None or dfw_raw.empty:
             continue
         if isinstance(dfw_raw.columns, pd.MultiIndex):
             dfw_raw.columns = [c[0] for c in dfw_raw.columns]
         dfw = calc_risk_from_raw(dfw_raw).reset_index()
         last = dfw.iloc[-1]
         score = int(last["RiskScore"])
-        rows.append({"Symbol": sym, "Sector": sector_map.get(sym.upper(), "Unknown"), "Date": last[dfw.columns[0]], "Close": last["Close"], "Volume": last["Volume"], "PctChange": round(last["PctChange"], 2), "RiskScore": score, "RiskLevel": classify_risk(score)})
+        rows.append({"Symbol": sym, "Sector": sector_map.get(sym.upper(), "Unknown"), "Date": last[dfw.columns[0]], "Close": last["Close"], "Volume": int(last["Volume"]), "PctChange": round(last["PctChange"], 2), "RiskScore": score, "RiskLevel": ("High" if score >= 70 else "Medium" if score >= 40 else "Low")})
     if not rows:
         st.info("No data loaded for watchlist. Check symbols.")
     else:
         watch_df = pd.DataFrame(rows).sort_values("RiskScore", ascending=False).reset_index(drop=True)
-        def highlight_watch(row):
-            if row["RiskLevel"] == "High":
-                return ["background-color: rgba(255,0,0,0.25)"] * len(row)
-            if row["RiskLevel"] == "Medium":
-                return ["background-color: rgba(255,200,0,0.20)"] * len(row)
-            return [""] * len(row)
-        st.markdown("### 📋 Latest Risk by Stock")
-        st.dataframe(watch_df.style.apply(highlight_watch, axis=1), use_container_width=True)
-        st.markdown("### 🧊 Sector-wise Average Risk")
+        st.dataframe(watch_df, use_container_width=True)
+        st.download_button("Download watchlist CSV", df_to_csv_bytes(watch_df), f"watchlist_{symbol}.csv", "text/csv", key=f"download_watchlist_{symbol}")
         sector_risk = watch_df.groupby("Sector")["RiskScore"].mean().reset_index()
         if not sector_risk.empty:
-            fig_sec = go.Figure(data=[go.Bar(x=sector_risk["Sector"], y=sector_risk["RiskScore"], marker=dict(color=["#ff4d4d" if v >= 70 else "#ffcc33" if v >= 40 else "#33dd77" for v in sector_risk["RiskScore"]]))])
+            fig_sec = go.Figure([go.Bar(x=sector_risk["Sector"], y=sector_risk["RiskScore"], marker=dict(color=["#d32f2f" if v >= 70 else "#ffcc33" if v >= 40 else "#33dd77" for v in sector_risk["RiskScore"]]))])
             fig_sec.update_layout(template="plotly_dark", height=380, xaxis_title="Sector", yaxis_title="Average Risk Score")
-            st.plotly_chart(fig_sec, use_container_width=True)
-        else:
-            st.info("No sector mapping available for these symbols.")
+            st.plotly_chart(fig_sec, use_container_width=True, key=f"sector_risk_{symbol}")
 
-# ---------------- TAB 4 - FII / DII ----------------
+# ---------------- TAB 4: FII / DII ----------------
 with tab_fii:
     st.subheader("FII / DII Flow Visualisation")
     col_demo, col_upload = st.columns([1, 1])
     with col_demo:
         st.markdown("**Download FII/DII CSV template**")
-        st.download_button("Download FII/DII template", make_template_bytes("fii"), file_name="fii_template.csv", mime="text/csv")
+        template = pd.DataFrame({"Date": ["2025-12-01", "2025-12-02"], "FII": [1000, -500], "DII": [-200, 300]})
+        st.download_button("Download FII/DII template", template.to_csv(index=False).encode("utf-8"), f"fii_template_{symbol}.csv", "text/csv", key=f"download_fii_template_{symbol}")
     with col_upload:
-        fii_file = st.file_uploader("Upload FII/DII CSV (Date, FII, DII, Net optional)", type=["csv"], key="fii_uploader")
+        fii_file = st.file_uploader("Upload FII/DII CSV", type=["csv"], key=f"upload_fii_{symbol}")
     if fii_file is None:
-        st.info("Upload a CSV with columns like: **Date, FII, DII, Net**.\nYou can edit the template after download and re-upload.")
+        st.info("Upload CSV with columns Date, FII, DII (optional Net).")
     else:
         try:
-            fii_df = pd.read_csv(fii_file)
+            fii_df = pd.read_csv(fii_file, parse_dates=["Date"])
+            if "Date" not in fii_df.columns:
+                fii_df["Date"] = pd.to_datetime(fii_df.iloc[:, 0])
+            if "Net" not in fii_df.columns and fii_df.shape[1] >= 3:
+                fii_df["Net"] = fii_df.iloc[:, 1] + fii_df.iloc[:, 2]
+            st.dataframe(fii_df.tail(50), use_container_width=True)
+            fig = go.Figure()
+            fig.add_trace(go.Bar(x=fii_df["Date"], y=fii_df["Net"], name="Net Flow", marker_color="#d32f2f"))
+            fig.update_layout(template="plotly_dark", height=420)
+            st.plotly_chart(fig, use_container_width=True, key=f"fii_flow_{symbol}")
+            st.download_button("Download uploaded FII/DII", df_to_csv_bytes(fii_df), f"fii_uploaded_{symbol}.csv", "text/csv", key=f"download_fii_uploaded_{symbol}")
         except Exception as e:
             st.error(f"Error reading CSV: {e}")
-        else:
-            cols_lower = {c.lower(): c for c in fii_df.columns}
-            if "date" not in cols_lower or "fii" not in cols_lower or "dii" not in cols_lower:
-                st.error("CSV must contain at least 'Date', 'FII', 'DII' columns.")
-            else:
-                date_col = cols_lower["date"]
-                fii_col = cols_lower["fii"]
-                dii_col = cols_lower["dii"]
-                fii_df[date_col] = pd.to_datetime(fii_df[date_col])
-                fii_df = fii_df.sort_values(date_col)
-                net_candidates = [c for c in fii_df.columns if c.lower() == "net"]
-                if net_candidates:
-                    net_col = net_candidates[0]
-                else:
-                    fii_df["Net"] = fii_df[fii_col] + fii_df[dii_col]
-                    net_col = "Net"
-                st.markdown("### Recent FII/DII Activity")
-                st.dataframe(fii_df[[date_col, fii_col, dii_col, net_col]].tail(20))
-                fig_flows = go.Figure()
-                fig_flows.add_trace(go.Bar(x=fii_df[date_col], y=fii_df[net_col], name="Net Flow"))
-                fig_flows.update_layout(template="plotly_dark", height=420, xaxis_title="Date", yaxis_title="Net (FII + DII)")
-                st.plotly_chart(fig_flows, use_container_width=True)
 
-# ---------------- TAB 5 - Advanced Forensics ----------------
+# ---------------- TAB 5: ADVANCED FORENSICS ----------------
 with tab_adv:
     st.subheader("Operator Fingerprint & Forensic Analytics")
     df_for = df.copy()
+
+    def operator_fingerprint_scores(df_local: pd.DataFrame) -> Dict[str, int]:
+        scores = {"Pump-Dump": 10, "Accumulation→Spike": 10, "VolumeCrashSelloff": 10, "Laddering": 10}
+        if len(df_local) < 20:
+            return scores
+        seg = df_local.tail(min(60, len(df_local))).reset_index(drop=True)
+        start_price = seg["Close"].iloc[0]
+        max_price = seg["Close"].max()
+        end_price = seg["Close"].iloc[-1]
+        peak_idx = seg["Close"].idxmax()
+        rise = (max_price / start_price) - 1 if start_price != 0 else 0
+        fall_from_peak = (max_price - end_price) / max_price if max_price != 0 else 0
+        if rise > 0.3 and fall_from_peak > 0.2 and peak_idx > len(seg) // 3:
+            scores["Pump-Dump"] = 80
+        elif rise > 0.2 and fall_from_peak > 0.1:
+            scores["Pump-Dump"] = 50
+        green = seg["Close"] > seg["PrevClose"]
+        streaks = green.groupby((green != green.shift()).cumsum()).cumsum()
+        long_streak = streaks.max() if not streaks.empty else 0
+        if long_streak >= 5 and rise > 0.15:
+            scores["Laddering"] = 70
+        big_down = seg[seg["PctChange"] < -4]
+        if not big_down.empty and (big_down["Volume"] > seg["Volume"].mean() * 1.5).any():
+            scores["VolumeCrashSelloff"] = 75
+        half = len(seg) // 2
+        early = seg.iloc[:half]
+        late = seg.iloc[half:]
+        if not early.empty and not late.empty:
+            if late["Volume"].mean() > early["Volume"].mean() * 1.4 and (late["Close"].max() / early["Close"].mean() - 1) > 0.12:
+                scores["Accumulation→Spike"] = 70
+        return scores
+
     scores = operator_fingerprint_scores(df_for)
     col1, col2 = st.columns(2)
     with col1:
-        st.markdown("#### 🧬 Operator Fingerprint Patterns")
+        st.markdown("#### 🧬 Operator Patterns (probabilities)")
         for name, val in scores.items():
-            st.write(f"- **{name}** → Probability ~ **{val}%**")
+            st.write(f"- **{name}** → {val}%")
     with col2:
         st.markdown("#### 🌡 Integrity vs Suspicion")
-        integrity = compute_integrity_score(df_for)
+        integrity_val = compute_integrity_score(df_for)
         high_days = int((df_for["RiskScore"] >= 70).sum())
         med_days = int((df_for["RiskScore"].between(40, 69)).sum())
-        st.write(f"- Integrity Score: **{integrity}/100**")
-        st.write(f"- High-risk candles: **{high_days}**")
-        st.write(f"- Medium-risk candles: **{med_days}**")
-    st.markdown("---")
-    st.markdown("### ⏱ Multi-Timeframe Risk Alignment")
-    tf_data = []
-    for label, intr, per in [("5m", "5m", "5d"), ("15m", "15m", "5d"), ("60m", "60m", "1mo"), ("1d", "1d", "3mo")]:
-        try:
-            d_r, d_l = 0, "No data"
-            d_r, d_l = (lambda s, p, i: (0, "No data"))(symbol, per, intr)  # placeholder to avoid blocking
-        except Exception:
-            d_r, d_l = 0, "No data"
-        # use simple_risk_for_interval only if you want to call yf here (skipped to save time)
-        tf_data.append({"Timeframe": label, "RiskScore": d_r, "RiskLevel": d_l})
-    tf_df = pd.DataFrame(tf_data)
-    st.dataframe(tf_df, use_container_width=True)
+        st.write(f"- Integrity Score: **{integrity_val}**")
+        st.write(f"- High-risk candles: **{high_days}**, Medium-risk: **{med_days}**")
+
     st.markdown("---")
     st.markdown("### 🔥 Volume / Activity Heatmap")
-    heat_df = df_for[[time_col, "Volume", "RiskScore"]].copy()
-    heat_df["Date"] = pd.to_datetime(heat_df[time_col]).dt.date
-    heat_df["Day"] = pd.to_datetime(heat_df[time_col]).dt.day
-    heat_df["Month"] = pd.to_datetime(heat_df[time_col]).dt.month
-    heat_pivot = heat_df.pivot_table(index="Month", columns="Day", values="Volume", aggfunc="mean")
-    if not heat_pivot.empty:
-        fig_heat = go.Figure(data=go.Heatmap(z=heat_pivot.values, x=heat_pivot.columns, y=heat_pivot.index, colorscale="Viridis"))
-        fig_heat.update_layout(template="plotly_dark", height=350, xaxis_title="Day of Month", yaxis_title="Month")
-        st.plotly_chart(fig_heat, use_container_width=True)
-    else:
-        st.info("Not enough data to build heatmap.")
-    st.markdown("---")
-    st.markdown("### 📣 Social Hype & Options templates")
-    st.download_button("Download Hype template", make_template_bytes("hype"), "hype_template.csv", "text/csv")
-    st.download_button("Download Options template", make_template_bytes("options"), "options_template.csv", "text/csv")
+    try:
+        heat_df = df_for[[time_col, "Volume", "RiskScore"]].copy()
+        heat_df["DateOnly"] = pd.to_datetime(heat_df[time_col]).dt.date
+        heat_df["Day"] = pd.to_datetime(heat_df[time_col]).dt.day
+        heat_df["Month"] = pd.to_datetime(heat_df[time_col]).dt.month
+        pivot = heat_df.pivot_table(index="Month", columns="Day", values="Volume", aggfunc="mean")
+        if not pivot.empty:
+            fig_heat = go.Figure(data=go.Heatmap(z=pivot.values, x=pivot.columns, y=pivot.index, colorscale="Viridis"))
+            fig_heat.update_layout(template="plotly_dark", height=350)
+            st.plotly_chart(fig_heat, use_container_width=True, key=f"heatmap_{symbol}")
+        else:
+            st.info("Not enough data to build heatmap.")
+    except Exception:
+        st.info("Heatmap generation failed for this dataset.")
 
-# ---------------- TAB 6 - Fundamentals (nicer UI) ----------------
+    st.markdown("---")
+    st.markdown("### 🔊 Social Hype & Options (optional / best-effort)")
+    st.markdown("Combines social mentions, sentiment, options OI changes and volume spikes into a HypeScore (0–100).")
+    col_a, col_b = st.columns([1, 1])
+    with col_a:
+        social_query = st.text_input("Social query (name/stock) (for snscrape):", value=symbol.replace(".NS", ""), key=f"social_query_{symbol}")
+        max_tweets = st.slider("Max tweets to scan (snScrape)", min_value=50, max_value=500, value=150, step=50, key=f"max_tweets_{symbol}")
+    with col_b:
+        use_options_hype = st.checkbox("Include options OI delta (yfinance)", value=True, key=f"options_hype_{symbol}")
+
+    def compute_social_hype(query: str, max_items: int = 150) -> Tuple[int, float]:
+        if not SNSSCRAPE_AVAILABLE:
+            return 0, 0.0
+        analyzer = SentimentIntensityAnalyzer()
+        since_days = 1
+        cutoff = (pd.Timestamp.now() - pd.Timedelta(days=since_days)).strftime("%Y-%m-%d")
+        q = f'{query} since:{cutoff}'
+        cnt = 0
+        score_sum = 0.0
+        try:
+            for i, tweet in enumerate(sntwitter.TwitterSearchScraper(q).get_items()):
+                if i >= max_items:
+                    break
+                cnt += 1
+                s = analyzer.polarity_scores(tweet.content)
+                score_sum += s["compound"]
+        except Exception:
+            return 0, 0.0
+        avg_sent = (score_sum / cnt) if cnt > 0 else 0.0
+        return cnt, avg_sent
+
+    if st.button("Run Social Hype & Options scan", key=f"run_hype_{symbol}"):
+        with st.spinner("Running hype scan (may be slow if scraping)..."):
+            mentions_count = 0
+            avg_sentiment = 0.0
+            if SNSSCRAPE_AVAILABLE:
+                mentions_count, avg_sentiment = compute_social_hype(social_query, max_items=max_tweets)
+                st.write(f"Mentions (last 24h): **{mentions_count}**, Avg sentiment: **{avg_sentiment:.3f}**")
+            else:
+                st.info("snScrape or VADER not installed. Install `snscrape` and `vaderSentiment` to enable social scanning.")
+
+            oi_score = 0.0
+            oi_change_pct = 0.0
+            if use_options_hype:
+                try:
+                    tk = yf.Ticker(symbol)
+                    exps = tk.options
+                    if exps:
+                        exp0 = exps[0]
+                        oc = tk.option_chain(exp0)
+                        calls = oc.calls if hasattr(oc, "calls") else pd.DataFrame()
+                        puts = oc.puts if hasattr(oc, "puts") else pd.DataFrame()
+                        total_oi = int(calls["openInterest"].sum() if not calls.empty else 0) + int(puts["openInterest"].sum() if not puts.empty else 0)
+                        prev_oi = st.session_state.get(f"prev_total_oi_{symbol}", None)
+                        if prev_oi:
+                            oi_change_pct = (total_oi - prev_oi) / (prev_oi or 1) * 100
+                        st.session_state[f"prev_total_oi_{symbol}"] = total_oi
+                        oi_score = min(20.0, (abs(oi_change_pct) / 10.0) * 20.0)
+                        st.write(f"Options total OI (nearest expiry): **{total_oi}**, ∆OI%: **{oi_change_pct:.2f}%**, OI score: **{oi_score:.1f}**")
+                    else:
+                        st.info("No option expiries for this symbol via yfinance.")
+                except Exception as e:
+                    st.error(f"Options fetch failed: {e}")
+
+            volscore = 0.0
+            try:
+                last_vol = df["Volume"].iloc[-1]
+                avg_vol = df["Volume"].rolling(20).mean().iloc[-1] if len(df) >= 20 else df["Volume"].mean()
+                if avg_vol and not np.isnan(avg_vol) and avg_vol > 0:
+                    vol_ratio = last_vol / avg_vol
+                    volscore = min(10.0, max(0.0, (vol_ratio - 1.0) / 2.0 * 10.0))
+                    st.write(f"Volume ratio (last / avg20): {vol_ratio:.2f}, volume score: {volscore:.1f}")
+            except Exception:
+                pass
+
+            mentions_score = min(40.0, (mentions_count / max(1.0, float(max_tweets))) * 40.0)
+            sent_score = (avg_sentiment + 1.0) / 2.0 * 30.0
+            hype_score = int(round(mentions_score + sent_score + oi_score + volscore))
+            hype_score = max(0, min(100, hype_score))
+            st.markdown(f"### 🔥 HypeScore: **{hype_score}/100**")
+            st.write(f"Breakdown — MentionsScore: {mentions_score:.1f}/40, SentScore: {sent_score:.1f}/30, OIScore: {oi_score:.1f}/20, VolScore: {volscore:.1f}/10")
+
+# ---------------- TAB 6: FUNDAMENTALS ----------------
 with tab_fundamentals:
     st.subheader("Fundamentals — company financials & filings")
-    st.markdown("Enter a stock ticker (e.g., `INFY.NS`) and click Fetch.")
+    st.markdown("Enter a stock ticker (e.g., `INFY.NS`) and click Fetch. (FMP key optional for deeper data.)")
 
-    fcol_l, fcol_r = st.columns([1.4, 1])
-    with fcol_l:
-        f_symbol = st.text_input("Ticker for fundamentals", value=symbol)
-    with fcol_r:
-        st.markdown("Notes:")
-        st.markdown("- Data pulled best-effort from `yfinance`.")
-        st.markdown("- For full filings, upload or paste the annual report links / PDFs below.")
+    left, right = st.columns([1.4, 1])
+    with left:
+        f_symbol = st.text_input("Ticker for fundamentals", value=symbol, key=f"f_symbol_{symbol}")
+    with right:
+        st.markdown("**Notes**")
+        st.markdown("- Data pulled best-effort from yfinance; FMP used if API key available.")
+        st.markdown("- For full filings, upload / paste annual report links or PDFs (future).")
 
-    if st.button("Fetch fundamentals", key="fetch_fund"):
+    if st.button("Fetch fundamentals", key=f"fetch_fund_{symbol}"):
         if not f_symbol.strip():
             st.error("Enter a ticker symbol first.")
         else:
             with st.spinner("Fetching fundamentals..."):
+                yf_t = yf.Ticker(f_symbol.strip())
+                info = {}
                 try:
-                    t = yf.Ticker(f_symbol.strip())
+                    info = yf_t.info or {}
+                except Exception:
                     info = {}
+
+                snapshot = {
+                    "Symbol": f_symbol.strip().upper(),
+                    "Name": info.get("shortName") or info.get("longName") or "-",
+                    "Market Cap": format_indian_number(info.get("marketCap")),
+                    "Price": info.get("currentPrice") or info.get("regularMarketPrice") or "-",
+                    "P/E (TTM)": info.get("trailingPE") or "-",
+                    "Forward P/E": info.get("forwardPE") or "-",
+                    "Dividend Yield": (f"{info.get('dividendYield')*100:.2f}%" if isinstance(info.get('dividendYield'), (int, float)) else info.get("dividendYield") or "-"),
+                    "Book Value": format_indian_number(info.get("bookValue")),
+                    "ROE": (f"{info.get('returnOnEquity')*100:.2f}%" if isinstance(info.get('returnOnEquity'), (int, float)) else info.get("returnOnEquity") or "-"),
+                    "Price/Book": info.get("priceToBook") or "-",
+                    "52wk High/Low": f"{info.get('fiftyTwoWeekHigh', '-')}/{info.get('fiftyTwoWeekLow', '-')}",
+                }
+
+                # try FMP for richer data
+                fmp_profile = None
+                fmp_income = None
+                fmp_bs = None
+                fmp_cf = None
+                fmp_share = None
+                if FMP_API_KEY:
+                    s_clean = f_symbol.strip().upper().replace(".NS", "")
                     try:
-                        info = t.info or {}
+                        prof = call_fmp(f"profile/{s_clean}")
+                        if prof:
+                            fmp_profile = prof[0] if isinstance(prof, list) and len(prof) > 0 else prof
+                        inc = call_fmp(f"income-statement/{s_clean}?limit=50")
+                        bs = call_fmp(f"balance-sheet-statement/{s_clean}?limit=50")
+                        cf = call_fmp(f"cash-flow-statement/{s_clean}?limit=50")
+                        shp = call_fmp(f"ownership/{s_clean}")
+                        fmp_income = pd.DataFrame(inc) if inc else None
+                        fmp_bs = pd.DataFrame(bs) if bs else None
+                        fmp_cf = pd.DataFrame(cf) if cf else None
+                        fmp_share = shp
                     except Exception:
-                        info = {}
-                    # basic snapshot
-                    snapshot = {
-                        "Symbol": f_symbol.strip().upper(),
-                        "Name": info.get("shortName", "-"),
-                        "Market Cap": format_indian_number(info.get("marketCap")),
-                        "P/E (TTM)": human_readable_ratio(info.get("trailingPE")),
-                        "Forward P/E": human_readable_ratio(info.get("forwardPE")),
-                        "Dividend Yield (%)": (f"{info.get('dividendYield')*100:.2f}%" if info.get("dividendYield") else "-") if isinstance(info.get("dividendYield"), (int, float)) else (human_readable_ratio(info.get("dividendYield")) if info.get("dividendYield") else "-"),
-                        "Book Value": format_indian_number(info.get("bookValue")),
-                        "ROE": (f"{info.get('returnOnEquity')*100:.2f}%" if info.get("returnOnEquity") else "-") if isinstance(info.get("returnOnEquity"), (int, float)) else human_readable_ratio(info.get("returnOnEquity")),
-                        "Price/Book": human_readable_ratio(info.get("priceToBook")),
-                        "52wk High / Low": f"{info.get('fiftyTwoWeekHigh', '-')}/{info.get('fiftyTwoWeekLow', '-')}",
-                    }
-                    # quarterly statements (best-effort)
-                    try:
-                        q_pl = t.quarterly_financials.fillna(0)
-                    except Exception:
-                        q_pl = pd.DataFrame()
-                    try:
-                        q_bs = t.quarterly_balance_sheet.fillna(0)
-                    except Exception:
-                        q_bs = pd.DataFrame()
-                    try:
-                        q_cf = t.quarterly_cashflow.fillna(0)
-                    except Exception:
-                        q_cf = pd.DataFrame()
-                except Exception as e:
-                    st.error(f"Failed to fetch fundamentals: {e}")
-                    q_pl, q_bs, q_cf, snapshot = pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {}
-                # display snapshot as cards
+                        pass
+
+                # quarterly via yfinance (best-effort)
+                try:
+                    q_pl = yf_t.quarterly_financials.T if getattr(yf_t, "quarterly_financials", None) is not None else pd.DataFrame()
+                except Exception:
+                    q_pl = pd.DataFrame()
+                try:
+                    q_bs = yf_t.quarterly_balance_sheet.T if getattr(yf_t, "quarterly_balance_sheet", None) is not None else pd.DataFrame()
+                except Exception:
+                    q_bs = pd.DataFrame()
+                try:
+                    q_cf = yf_t.quarterly_cashflow.T if getattr(yf_t, "quarterly_cashflow", None) is not None else pd.DataFrame()
+                except Exception:
+                    q_cf = pd.DataFrame()
+
+                # --- Snapshot display ---
                 st.markdown("### Snapshot")
                 kcols = st.columns(3)
-                keys = list(snapshot.items())
-                for i, (k, v) in enumerate(keys):
-                    col = kcols[i % 3]
-                    with col:
-                        st.markdown(f"<div class='fund-card'><div class='fund-key'>{k}</div><div class='fund-val'>{v}</div></div>", unsafe_allow_html=True)
-
+                items = list(snapshot.items())
+                for i, (k, v) in enumerate(items):
+                    coln = kcols[i % 3]
+                    with coln:
+                        st.markdown(f"<div class='fund-card'><div style='font-size:12px;color:#bdbdbd'>{k}</div><div style='font-size:16px'>{v}</div></div>", unsafe_allow_html=True)
                 st.markdown("---")
-                # neat table of snapshot for download
                 snap_df = pd.DataFrame({"Key": list(snapshot.keys()), "Value": list(snapshot.values())})
                 st.dataframe(snap_df, use_container_width=True)
-                st.download_button("Download snapshot CSV", df_to_csv_bytes(snap_df), "fund_snapshot.csv", "text/csv")
+                st.download_button("Download snapshot CSV", df_to_csv_bytes(snap_df), f"fund_snapshot_{f_symbol}.csv", "text/csv", key=f"download_snapshot_{f_symbol}")
 
-                # quarterly P&L
+                # --- Price & multi-horizon charts (robust) ---
+                st.markdown("### Price charts (multi-horizon & candlestick)")
+                horizon = st.selectbox("Select horizon for analysis", ["1m", "6m", "1y", "3y", "5y", "10y", "max"], index=2, key=f"horizon_select_{f_symbol}")
+                yf_period = period_mapping_for_yf(horizon)
+
+                price_raw = None
+                try:
+                    price_raw = yf.download(f_symbol.strip(), period=yf_period, interval="1d", progress=False)
+                except Exception:
+                    price_raw = None
+
+                price_df = None
+                if price_raw is None or (isinstance(price_raw, pd.DataFrame) and price_raw.empty):
+                    st.info("Price history not available for selected horizon.")
+                else:
+                    # flatten columns if multiindex
+                    if isinstance(price_raw.columns, pd.MultiIndex):
+                        price_raw.columns = [c[0] for c in price_raw.columns]
+                    # safe numeric coercion
+                    for col in ["Open", "High", "Low", "Close", "Volume"]:
+                        try:
+                            if col in price_raw.columns:
+                                price_raw[col] = pd.to_numeric(price_raw[col], errors="coerce")
+                        except Exception:
+                            price_raw[col] = np.nan
+                    if not set(["Open", "High", "Low", "Close"]).issubset(price_raw.columns) or price_raw[["Open", "High", "Low", "Close"]].dropna(how="all").empty:
+                        st.info("Not enough OHLC data to draw candlestick.")
+                    else:
+                        price_df = price_raw.dropna(subset=["Open", "High", "Low", "Close"]).copy()
+                        price_df.index = pd.to_datetime(price_df.index)
+                        price_df = price_df.sort_index()
+
+                        candlestick = go.Figure()
+                        candlestick.add_trace(go.Candlestick(
+                            x=price_df.index,
+                            open=price_df["Open"],
+                            high=price_df["High"],
+                            low=price_df["Low"],
+                            close=price_df["Close"],
+                            increasing_line_color="#33aa44",
+                            decreasing_line_color="#d32f2f",
+                            name="Price"
+                        ))
+
+                        try:
+                            up_mask = (price_df["Close"] >= price_df["Open"])
+                            vol_colors = ["#33aa44" if up else "#d32f2f" for up in up_mask]
+                        except Exception:
+                            vol_colors = ["#888888"] * len(price_df)
+
+                        candlestick.add_trace(go.Bar(
+                            x=price_df.index,
+                            y=price_df["Volume"],
+                            name="Volume",
+                            marker_color=vol_colors,
+                            yaxis="y2",
+                            opacity=0.6,
+                            hovertemplate="Vol: %{y}<extra></extra>"
+                        ))
+
+                        candlestick.update_layout(
+                            template="plotly_dark",
+                            height=520,
+                            xaxis_rangeslider_visible=False,
+                            yaxis_title="Price",
+                            yaxis2=dict(overlaying="y", side="right", showgrid=False, title="Volume", rangemode="tozero")
+                        )
+
+                        st.plotly_chart(candlestick, use_container_width=True, key=f"candlestick_plot_{f_symbol}_{horizon}")
+
+                        fig_close = go.Figure()
+                        fig_close.add_trace(go.Bar(
+                            x=price_df.index,
+                            y=price_df["Close"],
+                            marker_color=["#33aa44" if (price_df["Close"].iloc[i] >= price_df["Open"].iloc[i]) else "#d32f2f" for i in range(len(price_df))]
+                        ))
+                        fig_close.update_layout(template="plotly_dark", height=200)
+                        st.plotly_chart(fig_close, use_container_width=True, key=f"close_bar_plot_{f_symbol}_{horizon}")
+
+                        try:
+                            idx = price_df.index
+                            vals = price_df["Close"]
+                            cagr_sel = compute_cagr_from_series(idx, vals)
+                            if cagr_sel is not None:
+                                st.markdown(f"- Price CAGR (selected horizon): *{(cagr_sel * 100):.2f}%*")
+                            else:
+                                st.markdown("- Price CAGR (selected horizon): —")
+                        except Exception:
+                            st.markdown("- Price CAGR (selected horizon): —")
+
+                # --- Quarterly P&L ---
                 st.markdown("### Quarterly Profit & Loss")
                 if not q_pl.empty:
-                    # format large numbers in table view for readability
-                    qpl_display = q_pl.copy()
-                    for c in qpl_display.columns:
-                        qpl_display[c] = qpl_display[c].apply(format_indian_number)
-                    st.dataframe(qpl_display.astype(str), use_container_width=True)
-                    st.download_button("Download quarterly P&L CSV", df_to_csv_bytes(q_pl.reset_index()), "quarterly_pl.csv", "text/csv")
+                    display_pl = q_pl.copy()
+                    for c in display_pl.columns:
+                        display_pl[c] = display_pl[c].apply(lambda x: format_indian_number(x) if (isinstance(x, (int, float)) and not pd.isna(x)) else x)
+                    st.dataframe(display_pl, use_container_width=True)
+                    st.download_button("Download quarterly P&L CSV", df_to_csv_bytes(q_pl.reset_index()), f"quarterly_pl_{f_symbol}.csv", "text/csv", key=f"download_quarterly_pl_{f_symbol}")
+                elif fmp_income is not None:
+                    st.dataframe(fmp_income.head(10).fillna("-"), use_container_width=True)
+                    st.download_button("Download FMP income CSV", df_to_csv_bytes(fmp_income), f"fmp_income_{f_symbol}.csv", "text/csv", key=f"download_fmp_income_{f_symbol}")
                 else:
-                    st.info("Quarterly P&L not available via yfinance for this symbol.")
+                    st.info("Quarterly P&L not available via current sources.")
 
+                # --- Quarterly Balance Sheet ---
                 st.markdown("### Quarterly Balance Sheet")
                 if not q_bs.empty:
-                    qbs_display = q_bs.copy()
-                    for c in qbs_display.columns:
-                        qbs_display[c] = qbs_display[c].apply(format_indian_number)
-                    st.dataframe(qbs_display.astype(str), use_container_width=True)
-                    st.download_button("Download quarterly BS CSV", df_to_csv_bytes(q_bs.reset_index()), "quarterly_bs.csv", "text/csv")
+                    display_bs = q_bs.copy()
+                    for c in display_bs.columns:
+                        display_bs[c] = display_bs[c].apply(lambda x: format_indian_number(x) if (isinstance(x, (int, float)) and not pd.isna(x)) else x)
+                    st.dataframe(display_bs, use_container_width=True)
+                    st.download_button("Download quarterly BS CSV", df_to_csv_bytes(q_bs.reset_index()), f"quarterly_bs_{f_symbol}.csv", "text/csv", key=f"download_quarterly_bs_{f_symbol}")
+                elif fmp_bs is not None:
+                    st.dataframe(fmp_bs.head(10).fillna("-"), use_container_width=True)
+                    st.download_button("Download FMP BS CSV", df_to_csv_bytes(fmp_bs), f"fmp_bs_{f_symbol}.csv", "text/csv", key=f"download_fmp_bs_{f_symbol}")
                 else:
-                    st.info("Quarterly balance sheet not available via yfinance for this symbol.")
+                    st.info("Quarterly balance sheet not available.")
 
+                # --- Quarterly Cash Flows ---
                 st.markdown("### Quarterly Cash Flows")
                 if not q_cf.empty:
-                    qcf_display = q_cf.copy()
-                    for c in qcf_display.columns:
-                        qcf_display[c] = qcf_display[c].apply(format_indian_number)
-                    st.dataframe(qcf_display.astype(str), use_container_width=True)
-                    st.download_button("Download quarterly CF CSV", df_to_csv_bytes(q_cf.reset_index()), "quarterly_cf.csv", "text/csv")
+                    display_cf = q_cf.copy()
+                    for c in display_cf.columns:
+                        display_cf[c] = display_cf[c].apply(lambda x: format_indian_number(x) if (isinstance(x, (int, float)) and not pd.isna(x)) else x)
+                    st.dataframe(display_cf, use_container_width=True)
+                    st.download_button("Download quarterly CF CSV", df_to_csv_bytes(q_cf.reset_index()), f"quarterly_cf_{f_symbol}.csv", "text/csv", key=f"download_quarterly_cf_{f_symbol}")
+                elif fmp_cf is not None:
+                    st.dataframe(fmp_cf.head(10).fillna("-"), use_container_width=True)
+                    st.download_button("Download FMP CF CSV", df_to_csv_bytes(fmp_cf), f"fmp_cf_{f_symbol}.csv", "text/csv", key=f"download_fmp_cf_{f_symbol}")
                 else:
-                    st.info("Quarterly cash flows not available via yfinance for this symbol.")
+                    st.info("Quarterly cash flows not available.")
 
+                # --- Key ratios & derived working-cap metrics ---
                 st.markdown("---")
-                st.markdown("### Shareholding pattern (upload or download template)")
-                tmpl = pd.DataFrame({"Quarter": ["Mar-2025", "Dec-2024"], "Promoters": [14.3, 14.6], "FIIs": [30.0, 31.0], "DIIs": [40.0, 39.0], "Public": [15.7, 15.4]})
-                st.download_button("Download shareholding template", df_to_csv_bytes(tmpl), "shareholding_template.csv", "text/csv")
-                shp_file = st.file_uploader("Upload shareholding CSV (optional)", type=["csv"], key="sharehold_uploader")
-                if shp_file:
+                st.markdown("### Key ratios & derived working-cap metrics")
+                derived = {}
+                if fmp_income is not None and fmp_bs is not None:
                     try:
-                        shp_df = pd.read_csv(shp_file)
-                        st.dataframe(shp_df, use_container_width=True)
-                        st.download_button("Download shareholding CSV", df_to_csv_bytes(shp_df), "shareholding.csv", "text/csv")
-                    except Exception as e:
-                        st.error(f"Error reading shareholding CSV: {e}")
+                        inc = fmp_income.copy()
+                        bsdf = fmp_bs.copy()
+                        rev_col = None
+                        for cand in ["revenue", "totalRevenue", "revenueTotal", "sales"]:
+                            for c in inc.columns:
+                                if cand.lower() in c.lower():
+                                    rev_col = c
+                                    break
+                            if rev_col:
+                                break
+                        rec_col = None; inv_col = None; pay_col = None
+                        for cand in ["receivables", "accountsReceivable", "tradeReceivables", "netReceivables"]:
+                            for c in bsdf.columns:
+                                if cand.lower() in c.lower():
+                                    rec_col = c
+                                    break
+                            if rec_col:
+                                break
+                        for cand in ["inventory", "inventories"]:
+                            for c in bsdf.columns:
+                                if cand.lower() in c.lower():
+                                    inv_col = c
+                                    break
+                            if inv_col:
+                                break
+                        for cand in ["accountsPayable", "tradePayables", "payables"]:
+                            for c in bsdf.columns:
+                                if cand.lower() in c.lower():
+                                    pay_col = c
+                                    break
+                            if pay_col:
+                                break
+                        if rec_col and rev_col:
+                            latest_recs = bsdf[rec_col].iloc[0]
+                            latest_rev = inc[rev_col].iloc[0]
+                            derived["ReceivableDays"] = (latest_recs / latest_rev) * 365 if latest_rev and latest_recs else None
+                        if inv_col and rev_col:
+                            latest_inv = bsdf[inv_col].iloc[0]
+                            derived["InventoryDays"] = (latest_inv / latest_rev) * 365 if latest_rev and latest_inv else None
+                        if pay_col and rev_col:
+                            latest_pay = bsdf[pay_col].iloc[0]
+                            derived["PayableDays"] = (latest_pay / latest_rev) * 365 if latest_rev and latest_pay else None
+                        if "ReceivableDays" in derived and "InventoryDays" in derived and "PayableDays" in derived:
+                            derived["CCC"] = derived["ReceivableDays"] + derived["InventoryDays"] - derived["PayableDays"]
+                    except Exception:
+                        pass
 
+                colset = st.columns(6)
+                colset[0].metric("P/E", info.get("trailingPE") or "-")
+                colset[1].metric("P/B", info.get("priceToBook") or "-")
+                colset[2].metric("ROE", f"{info.get('returnOnEquity')*100:.2f}%" if isinstance(info.get('returnOnEquity'), (int, float)) else "-")
+                colset[3].metric("Debt/Equity", info.get("debtToEquity") or "-")
+                colset[4].metric("EV/EBITDA", "-")
+                colset[5].metric("EPS (TTM)", info.get("trailingEps") or "-")
+
+                st.markdown("**Derived working-cap**")
+                dd1, dd2, dd3, dd4 = st.columns(4)
+                dd1.metric("Receivable days", f"{derived.get('ReceivableDays','—'):.1f}" if derived.get('ReceivableDays') else "—")
+                dd2.metric("Inventory days", f"{derived.get('InventoryDays','—'):.1f}" if derived.get('InventoryDays') else "—")
+                dd3.metric("Payable days", f"{derived.get('PayableDays','—'):.1f}" if derived.get('PayableDays') else "—")
+                dd4.metric("Cash Conversion Cycle", f"{derived.get('CCC','—'):.1f}" if derived.get('CCC') else "—")
+
+                # --- Pros & Cons ---
                 st.markdown("---")
-                st.markdown("### Announcements & Annual Reports (paste links or upload files)")
-                ann_text = st.text_area("Paste announcement URLs / notes (one per line)", height=120)
-                st.markdown("You can paste annual report links here or upload PDFs in future releases.")
+                st.markdown("### Pros & Cons (auto summary)")
+                pros = []
+                cons = []
+                try:
+                    roe_val = info.get("returnOnEquity")
+                    if isinstance(roe_val, (int, float)) and roe_val > 0.15:
+                        pros.append(f"ROE strong ~ {roe_val*100:.1f}%")
+                    de = info.get("debtToEquity")
+                    if isinstance(de, (int, float)) and de < 0.6:
+                        pros.append("Low Debt-to-Equity")
+                    if info.get("dividendYield") and isinstance(info.get("dividendYield"), (int, float)) and info.get("dividendYield") > 0.02:
+                        pros.append(f"Pays dividend ~ {info.get('dividendYield')*100:.2f}%")
+                    if info.get("trailingPE") and isinstance(info.get("trailingPE"), (int, float)) and info.get("trailingPE") > 40:
+                        cons.append(f"High P/E ({info.get('trailingPE'):.1f}) — valuation expensive")
+                    if fmp_income is not None:
+                        try:
+                            inc = fmp_income
+                            revc = None
+                            for cand in ["revenue", "totalRevenue", "revenueTotal", "sales"]:
+                                for c in inc.columns:
+                                    if cand.lower() in c.lower():
+                                        revc = c
+                                        break
+                                if revc:
+                                    break
+                            if revc:
+                                rev_series = pd.to_numeric(inc[revc], errors="coerce").dropna()
+                                if len(rev_series) >= 2:
+                                    rev_series = rev_series[::-1].reset_index(drop=True)
+                                    years = len(rev_series) - 1
+                                    if years > 0 and rev_series.iloc[0] > 0:
+                                        cagr_rev = (rev_series.iloc[-1] / rev_series.iloc[0]) ** (1 / years) - 1
+                                        if cagr_rev > 0.12:
+                                            pros.append(f"5yr Sales CAGR ~ {cagr_rev*100:.1f}%")
+                                        else:
+                                            cons.append(f"Sales growth muted (~{cagr_rev*100:.1f}% over period)")
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                if not pros:
+                    pros.append("No strong pros flagged")
+                if not cons:
+                    cons.append("No strong cons flagged")
+                pc1, pc2 = st.columns(2)
+                with pc1:
+                    st.markdown("#### PROS")
+                    for p in pros:
+                        st.write("- " + p)
+                with pc2:
+                    st.markdown("#### CONS")
+                    for c in cons:
+                        st.write("- " + c)
 
-# ------------------- AUTO REFRESH -------------------------
+                # --- Peer comparison ---
+                st.markdown("---")
+                st.markdown("### Peer comparison")
+                peer_input = st.text_input("Enter peer symbols separated by comma (e.g., TCS.NS,HCLTECH.NS)", value=f"{f_symbol.strip().upper()}", key=f"peer_input_{f_symbol}")
+                if st.button("Fetch peers", key=f"peers_fetch_{f_symbol}"):
+                    rows_peer = []
+                    peer_list = [p.strip() for p in peer_input.split(",") if p.strip()]
+                    for p in peer_list:
+                        try:
+                            tx = yf.Ticker(p)
+                            pinf = tx.info or {}
+                            rows_peer.append({
+                                "Symbol": p,
+                                "Name": pinf.get("shortName") or pinf.get("longName") or "-",
+                                "CMP": pinf.get("regularMarketPrice") or pinf.get("previousClose") or "-",
+                                "P/E": pinf.get("trailingPE") or "-",
+                                "MarketCap": format_indian_number(pinf.get("marketCap")),
+                                "ROE": (f"{pinf.get('returnOnEquity')*100:.1f}%" if isinstance(pinf.get('returnOnEquity'), (int, float)) else "-")
+                            })
+                        except Exception:
+                            rows_peer.append({"Symbol": p, "Name": "Fetch failed"})
+                    if rows_peer:
+                        peer_df = pd.DataFrame(rows_peer)
+                        st.dataframe(peer_df, use_container_width=True)
+                        st.download_button("Download peer CSV", df_to_csv_bytes(peer_df), f"peer_compare_{f_symbol}.csv", "text/csv", key=f"download_peer_{f_symbol}")
+
+                # --- Growth metrics (CAGR) ---
+                st.markdown("---")
+                st.markdown("### Growth metrics (Price CAGR)")
+                if price_df is not None and not price_df.empty:
+                    pf = price_df.copy()
+                    pf.index = pd.to_datetime(pf.index)
+                    def price_cagr_for_years(years):
+                        try:
+                            end = pf.index.max()
+                            start = end - pd.DateOffset(years=years)
+                            sliced = pf[pf.index >= start]["Close"]
+                            if len(sliced) < 10:
+                                return None
+                            return compute_cagr_from_series(sliced.index, sliced)
+                        except Exception:
+                            return None
+                    p1 = price_cagr_for_years(1)
+                    p3 = price_cagr_for_years(3)
+                    p5 = price_cagr_for_years(5)
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Price CAGR (1y)", f"{p1*100:.2f}%" if p1 else "—")
+                    c2.metric("Price CAGR (3y)", f"{p3*100:.2f}%" if p3 else "—")
+                    c3.metric("Price CAGR (5y)", f"{p5*100:.2f}%" if p5 else "—")
+                else:
+                    st.info("Not enough price history to compute CAGR.")
+
+                # --- Cash flows summary ---
+                st.markdown("---")
+                st.markdown("### Cash flow summary (annual / reported)")
+                if fmp_cf is not None and not fmp_cf.empty:
+                    try:
+                        cf_view = fmp_cf[["date", "netCashProvidedByOperatingActivities", "netCashUsedForInvestingActivities", "netCashUsedProvidedByFinancingActivities", "netChangeInCash"]]
+                        st.dataframe(cf_view.head(8).fillna("-"), use_container_width=True)
+                        st.download_button("Download FMP cashflow CSV", df_to_csv_bytes(cf_view), f"fmp_cashflow_{f_symbol}.csv", "text/csv", key=f"download_fmp_cashflow_{f_symbol}")
+                    except Exception:
+                        st.info("Cashflow formatting issue.")
+                elif not q_cf.empty:
+                    disp = q_cf.copy()
+                    for c in disp.columns:
+                        disp[c] = disp[c].apply(lambda x: format_indian_number(x) if (isinstance(x, (int, float)) and not pd.isna(x)) else x)
+                    st.dataframe(disp, use_container_width=True)
+                    st.download_button("Download quarterly CF CSV (yfinance)", df_to_csv_bytes(q_cf.reset_index()), f"quarterly_cf_yf_{f_symbol}.csv", "text/csv", key=f"download_quarterly_cf_yf_{f_symbol}")
+                else:
+                    st.info("Cashflow not available from current sources. Use FMP key or upload reports.")
+
+                # --- Shareholding pattern (Promoters) ---
+                st.markdown("---")
+                st.markdown("### Shareholding pattern (Promoters etc.)")
+                if fmp_share:
+                    st.json(fmp_share)
+                else:
+                    st.info("Shareholding not available via FMP (or no FMP key). You can upload a CSV below.")
+                    share_template = pd.DataFrame({"Quarter": ["Mar-2025", "Dec-2024"], "Promoters": [14.3, 14.6], "FIIs": [30.0, 31.0], "DIIs": [39.0, 38.5], "Public": [16.7, 15.9]})
+                    st.download_button("Download shareholding template", share_template.to_csv(index=False).encode("utf-8"), f"share_template_{f_symbol}.csv", "text/csv", key=f"download_share_template_{f_symbol}")
+                    up = st.file_uploader("Upload shareholding CSV (optional)", type=["csv"], key=f"upload_share_{f_symbol}")
+                    if up:
+                        try:
+                            shdf = pd.read_csv(up)
+                            st.dataframe(shdf, use_container_width=True)
+                            st.download_button("Download uploaded shareholding", df_to_csv_bytes(shdf), f"uploaded_shareholding_{f_symbol}.csv", "text/csv", key=f"download_uploaded_share_{f_symbol}")
+                        except Exception as e:
+                            st.error("Failed to read shareholding CSV: " + str(e))
+
+                # --- Recommendation / safety flag (quick) ---
+                st.markdown("---")
+                st.markdown("### Recommendation / Safety flag (quick)")
+                score = 50
+                try:
+                    roe_val = info.get('returnOnEquity') or (fmp_profile.get('returnOnEquity') if fmp_profile else None)
+                    pe_val = info.get('trailingPE') or (fmp_profile.get('pe') if fmp_profile else None)
+                    debt_to_equity = info.get('debtToEquity') or (fmp_profile.get('debtToEquity') if fmp_profile else None)
+                    if isinstance(roe_val, (int, float)) and roe_val > 0.15:
+                        score += 15
+                    if isinstance(debt_to_equity, (int, float)) and debt_to_equity < 0.6:
+                        score += 10
+                    if isinstance(pe_val, (int, float)) and pe_val > 30:
+                        score -= 15
+                except Exception:
+                    pass
+                if score >= 70:
+                    rec = "BEST (Low risk / Good fundamentals)"
+                elif score >= 50:
+                    rec = "OK (Consider with caution)"
+                else:
+                    rec = "RISKY (High valuation / weak fundamentals)"
+                st.markdown(f"**Quick score:** {score} → **{rec}**")
+
+                st.success("Fundamentals fetched. Review above and download CSVs if needed.")
+
+# ---------------- AUTO REFRESH ----------------
 if auto_refresh:
     time.sleep(60)
     st.experimental_rerun()
 
-# ------------------- FOOTER ------------------------------
-st.markdown("<br><center>🛡️ Built with discipline and obsession by <b>venugAAdu</b>.</center>", unsafe_allow_html=True)
+# ---------------- FOOTER ----------------
+st.markdown('<div class="footer">🛡️ Built with discipline and obsession by <b>venugAAdu</b>.</div>', unsafe_allow_html=True)
