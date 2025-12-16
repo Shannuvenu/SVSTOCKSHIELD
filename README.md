@@ -1,8 +1,29 @@
-# S V STOCKSHIELD  
-Built by venugAAdu — Streamlit app for candlesticks, manipulation scanning, fundamentals and CSV templates.
+# 📈 SV STOCKSHIELD
 
-## Run locally
-1. python -m venv .venv  
-2. .venv\Scripts\activate  (Windows)  
-3. pip install -r requirements.txt  
-4. streamlit run app.py
+A full-stack stock market intelligence dashboard built with Streamlit.
+
+## 🚀 Features
+- Live NIFTY / SENSEX / BANKNIFTY dashboard
+- Advanced candlestick charting
+- Operator manipulation risk scanner
+- Smart candle tagging
+- Alerts engine
+- Google Trends market hype tracker
+- Multi-stock & sector risk analysis
+- Advanced forensics (pump-dump, whale activity)
+- Fundamentals analysis (ratios, CAGR, peers)
+
+## 🛠 Tech Stack
+- Python
+- Streamlit
+- yFinance
+- Plotly
+- Pandas / NumPy
+- Google Trends (pytrends)
+
+## ⚙️ Setup Instructions
+```bash
+git clone https://github.com/yourusername/SV-STOCKSHIELD.git
+cd SV-STOCKSHIELD
+pip install -r requirements.txt
+streamlit run app.py

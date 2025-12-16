@@ -1,5 +1,8 @@
 streamlit
 yfinance
 pandas
+numpy
 plotly
-fpdf
+requests
+pytrends
+python-dotenv

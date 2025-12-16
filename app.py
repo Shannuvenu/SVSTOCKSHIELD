@@ -7,6 +7,7 @@ import os
 import time
 from io import BytesIO
 from typing import Optional, Tuple, Dict, Any, List
+from pytrends.request import TrendReq
 
 import pandas as pd
 import numpy as np
@@ -14,14 +15,32 @@ import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
 import requests
+quotes = [
+    "Trade the plan, not emotions.",
+    "Capital protection comes first.",
+    "Risk management is real profit.",
+    "Smart money leaves clues.",
+    "Patience pays more than prediction."
+]
 
-# Optional imports for social hype; app still runs without these
-try:
-    import snscrape.modules.twitter as sntwitter
-    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-    SNSSCRAPE_AVAILABLE = True
-except Exception:
-    SNSSCRAPE_AVAILABLE = False
+if "quote_time" not in st.session_state:
+    st.session_state.quote_time = time.time()
+
+if time.time() - st.session_state.quote_time > 30:
+    st.session_state.quote_time = time.time()
+    st.session_state.current_quote = np.random.choice(quotes)
+
+st.markdown(
+    f"<div style='font-family:cursive;color:#ff4d4d;font-size:18px'>"
+    f"“{st.session_state.get('current_quote', quotes[0])}”</div>",
+    unsafe_allow_html=True
+)
+
+
+
+# ---------- SESSION INIT ----------
+if "watchlist" not in st.session_state:
+    st.session_state.watchlist = []
 
 # ---------------- CONFIG & KEYS ----------------
 st.set_page_config(page_title="S V STOCKSHIELD", page_icon="📈", layout="wide")
@@ -88,6 +107,20 @@ st.markdown(
 )
 
 # ---------------- HELPERS ----------------
+def fetch_google_trends_score(keyword):
+    try:
+        pytrends = TrendReq(hl="en-IN", tz=330)
+        pytrends.build_payload([keyword], timeframe="now 7-d", geo="IN")
+        data = pytrends.interest_over_time()
+
+        if data.empty:
+            return 0, "No trend data"
+
+        score = int(data[keyword].mean())
+        return score, "Trend data fetched"
+
+    except Exception as e:
+        return 0, f"Trend fetch failed"
 def format_indian_number(n):
     try:
         if n is None:
@@ -150,8 +183,8 @@ def fetch_index_snapshot(ticker: str) -> Optional[Tuple[float, float, float, str
         data = yf.download(ticker, period="5d", interval="1d", progress=False)
         if data.shape[0] < 2:
             return None
-        last = float(data["Close"].iloc[-1])
-        prev = float(data["Close"].iloc[-2])
+        last = data["Close"].iloc[-1].item()
+        prev = data["Close"].iloc[-2].item()
         change = last - prev
         pct = (change / prev) * 100 if prev != 0 else 0
         emoji = "🟢" if change >= 0 else "🔴"
@@ -182,8 +215,8 @@ with c4:
 st.write("")
 
 # ---------------- TABS ----------------
-(tab_setup, tab_risk, tab_watch, tab_fii, tab_adv, tab_fundamentals) = st.tabs(
-    ["📉 Candlesticks & Setup", "🚨 Operator Risk Scanner", "📋 Multi-Stock & Sector Risk", "💰 FII / DII Flows", "🧬 Advanced Forensics", "📚 Fundamentals"]
+(tab_setup, tab_risk, tab_watch, tab_fii, tab_adv, tab_hype, tab_fundamentals) = st.tabs(
+    ["📉 Candlesticks & Setup", "🚨 Operator Risk Scanner", "📋 Multi-Stock & Sector Risk", "💰 FII / DII Flows", "🧬 Advanced Forensics", "🔥 Market Hype", "📚 Fundamentals"]
 )
 
 # ---------------- TAB 1: Candles & Setup ----------------
@@ -272,11 +305,83 @@ def calc_risk_from_raw(df_raw: pd.DataFrame) -> pd.DataFrame:
         return "Low"
     df["RiskLevel"] = df["RiskScore"].apply(classify)
     return df
+def tag_candle(row):
+    """Classify candlestick pattern based on OHLC and risk metrics."""
+    try:
+        body = abs(row["Close"] - row["Open"]) if "Open" in row and "Close" in row else 0
+        upper_wick = row["High"] - max(row["Close"], row["Open"]) if "High" in row and "Close" in row and "Open" in row else 0
+        lower_wick = min(row["Close"], row["Open"]) - row["Low"] if "Low" in row and "Close" in row and "Open" in row else 0
+        range_ = row["High"] - row["Low"] if "High" in row and "Low" in row else 0
+        
+        if row["RiskScore"] >= 70:
+            if upper_wick > body * 1.5:
+                return "Rejection (High Risk)"
+            return "Suspicious (High Risk)"
+        elif row["RiskScore"] >= 40:
+            if lower_wick > body * 1.5:
+                return "Doji/Reversal Signal"
+            return "Caution (Medium Risk)"
+        else:
+            if row["Close"] > row["Open"]:
+                return "Bullish"
+            else:
+                return "Bearish"
+    except Exception:
+        return "Unknown"
+
+
+def backtest_risk_accuracy(df):
+    high_risk = df[df["RiskScore"] >= 70]
+    success = 0
+
+    for idx in high_risk.index:
+        future = df.loc[idx+1:idx+5]
+        if not future.empty and future["Close"].min() < df.loc[idx]["Close"]:
+            success += 1
+
+    total = len(high_risk)
+    accuracy = (success / total * 100) if total > 0 else 0
+    return total, accuracy
+
 
 
 df = calc_risk_from_raw(data_raw).reset_index()
+df["CandleTag"] = df.apply(tag_candle, axis=1)
+
+
+def alert_engine(df):
+    alerts = []
+
+    latest = df.iloc[-1]
+
+    # Manipulation alert
+    if latest["RiskScore"] >= 70:
+        alerts.append(("🔴 HIGH MANIPULATION", "Possible operator activity detected"))
+
+    # Volume spike
+    if latest["Volume"] > 1.8 * df["Volume"].rolling(20).mean().iloc[-1]:
+        alerts.append(("🟠 VOLUME SPIKE", "Unusual volume activity"))
+
+    return alerts
+
+
+
 
 # ---------------- TAB 2: RISK ----------------
+st.markdown("### 🚨 Alerts Engine")
+
+alerts = alert_engine(df)
+
+if not alerts:
+    st.success("🟢 No critical alerts")
+else:
+    for level, msg in alerts:
+        st.error(f"{level}: {msg}")
+
+st.markdown("### 🕯 Smart Candle Tags")
+st.dataframe(df[[time_col, "Close", "Volume", "RiskScore", "CandleTag"]])
+
+
 with tab_risk:
     st.subheader("Risk Snapshot & Manipulation Meter")
     latest = df.iloc[-1]
@@ -424,8 +529,38 @@ with tab_risk:
         df_show[coln] = df_show[coln].map({True: "Yes", False: "No"})
     st.dataframe(df_show, use_container_width=True)
     st.download_button("Download risk table CSV", df_show.to_csv(index=False).encode("utf-8"), f"risk_table_{symbol}.csv", "text/csv", key=f"download_risk_table_{symbol}")
+    total, accuracy = backtest_risk_accuracy(df)
+
+st.markdown("### 📈 Risk Backtesting")
+st.write(f"Samples: **{total}**")
+st.write(f"Accuracy: **{accuracy:.2f}%**")
+
+if accuracy > 60:
+    st.success("✅ Indicator is useful")
+else:
+    st.warning("⚠️ Indicator is noisy")
+
 
 # ---------------- TAB 3: WATCHLIST ----------------
+st.markdown("### ⭐ Persistent Watchlist")
+
+add_col, remove_col = st.columns(2)
+
+with add_col:
+    new_stock = st.text_input("Add stock to watchlist", key="add_watch")
+    if st.button("➕ Add"):
+        if new_stock and new_stock.upper() not in st.session_state.watchlist:
+            st.session_state.watchlist.append(new_stock.upper())
+
+with remove_col:
+    if st.session_state.watchlist:
+        remove_stock = st.selectbox("Remove stock", st.session_state.watchlist)
+        if st.button("➖ Remove"):
+            st.session_state.watchlist.remove(remove_stock)
+
+st.markdown("**Your Watchlist:**")
+st.write(st.session_state.watchlist)
+
 with tab_watch:
     st.subheader("Watchlist Risk & Sector View")
     watchlist_input = st.text_input("Watchlist symbols (comma separated)", value="RELIANCE.NS, TCS.NS, HDFCBANK.NS, ADANIENT.NS")
@@ -553,86 +688,6 @@ with tab_adv:
         st.info("Heatmap generation failed for this dataset.")
 
     st.markdown("---")
-    st.markdown("### 🔊 Social Hype & Options (optional / best-effort)")
-    st.markdown("Combines social mentions, sentiment, options OI changes and volume spikes into a HypeScore (0–100).")
-    col_a, col_b = st.columns([1, 1])
-    with col_a:
-        social_query = st.text_input("Social query (name/stock) (for snscrape):", value=symbol.replace(".NS", ""), key=f"social_query_{symbol}")
-        max_tweets = st.slider("Max tweets to scan (snScrape)", min_value=50, max_value=500, value=150, step=50, key=f"max_tweets_{symbol}")
-    with col_b:
-        use_options_hype = st.checkbox("Include options OI delta (yfinance)", value=True, key=f"options_hype_{symbol}")
-
-    def compute_social_hype(query: str, max_items: int = 150) -> Tuple[int, float]:
-        if not SNSSCRAPE_AVAILABLE:
-            return 0, 0.0
-        analyzer = SentimentIntensityAnalyzer()
-        since_days = 1
-        cutoff = (pd.Timestamp.now() - pd.Timedelta(days=since_days)).strftime("%Y-%m-%d")
-        q = f'{query} since:{cutoff}'
-        cnt = 0
-        score_sum = 0.0
-        try:
-            for i, tweet in enumerate(sntwitter.TwitterSearchScraper(q).get_items()):
-                if i >= max_items:
-                    break
-                cnt += 1
-                s = analyzer.polarity_scores(tweet.content)
-                score_sum += s["compound"]
-        except Exception:
-            return 0, 0.0
-        avg_sent = (score_sum / cnt) if cnt > 0 else 0.0
-        return cnt, avg_sent
-
-    if st.button("Run Social Hype & Options scan", key=f"run_hype_{symbol}"):
-        with st.spinner("Running hype scan (may be slow if scraping)..."):
-            mentions_count = 0
-            avg_sentiment = 0.0
-            if SNSSCRAPE_AVAILABLE:
-                mentions_count, avg_sentiment = compute_social_hype(social_query, max_items=max_tweets)
-                st.write(f"Mentions (last 24h): **{mentions_count}**, Avg sentiment: **{avg_sentiment:.3f}**")
-            else:
-                st.info("snScrape or VADER not installed. Install `snscrape` and `vaderSentiment` to enable social scanning.")
-
-            oi_score = 0.0
-            oi_change_pct = 0.0
-            if use_options_hype:
-                try:
-                    tk = yf.Ticker(symbol)
-                    exps = tk.options
-                    if exps:
-                        exp0 = exps[0]
-                        oc = tk.option_chain(exp0)
-                        calls = oc.calls if hasattr(oc, "calls") else pd.DataFrame()
-                        puts = oc.puts if hasattr(oc, "puts") else pd.DataFrame()
-                        total_oi = int(calls["openInterest"].sum() if not calls.empty else 0) + int(puts["openInterest"].sum() if not puts.empty else 0)
-                        prev_oi = st.session_state.get(f"prev_total_oi_{symbol}", None)
-                        if prev_oi:
-                            oi_change_pct = (total_oi - prev_oi) / (prev_oi or 1) * 100
-                        st.session_state[f"prev_total_oi_{symbol}"] = total_oi
-                        oi_score = min(20.0, (abs(oi_change_pct) / 10.0) * 20.0)
-                        st.write(f"Options total OI (nearest expiry): **{total_oi}**, ∆OI%: **{oi_change_pct:.2f}%**, OI score: **{oi_score:.1f}**")
-                    else:
-                        st.info("No option expiries for this symbol via yfinance.")
-                except Exception as e:
-                    st.error(f"Options fetch failed: {e}")
-
-            volscore = 0.0
-            try:
-                last_vol = df["Volume"].iloc[-1]
-                avg_vol = df["Volume"].rolling(20).mean().iloc[-1] if len(df) >= 20 else df["Volume"].mean()
-                if avg_vol and not np.isnan(avg_vol) and avg_vol > 0:
-                    vol_ratio = last_vol / avg_vol
-                    volscore = min(10.0, max(0.0, (vol_ratio - 1.0) / 2.0 * 10.0))
-                    st.write(f"Volume ratio (last / avg20): {vol_ratio:.2f}, volume score: {volscore:.1f}")
-            except Exception:
-                pass
-
-            mentions_score = min(40.0, (mentions_count / max(1.0, float(max_tweets))) * 40.0)
-            sent_score = (avg_sentiment + 1.0) / 2.0 * 30.0
-            hype_score = int(round(mentions_score + sent_score + oi_score + volscore))
-            hype_score = max(0, min(100, hype_score))
-            st.markdown(f"### 🔥 HypeScore: **{hype_score}/100**")
-            st.write(f"Breakdown — MentionsScore: {mentions_score:.1f}/40, SentScore: {sent_score:.1f}/30, OIScore: {oi_score:.1f}/20, VolScore: {volscore:.1f}/10")
 
 # ---------------- TAB 6: FUNDAMENTALS ----------------
 with tab_fundamentals:
@@ -1093,7 +1148,58 @@ with tab_fundamentals:
                 st.markdown(f"**Quick score:** {score} → **{rec}**")
 
                 st.success("Fundamentals fetched. Review above and download CSVs if needed.")
+# 🔥 Market Hype (Google Trends)
+with tab_hype:
+    st.subheader("🔥 Market Attention Tracker")
 
+    keyword = st.text_input(
+        "Search keyword (company / stock name)",
+        value=symbol.replace(".NS", "")
+    )
+
+    if "trend_score" not in st.session_state:
+        st.session_state.trend_score = None
+        st.session_state.trend_status = "Not checked"
+
+    if st.button("Check Market Attention"):
+        with st.spinner("Analyzing market attention..."):
+            score, status = fetch_google_trends_score(keyword)
+
+            # ---------- FALLBACK LOGIC ----------
+            if score == 0:
+                avg_vol = df["Volume"].rolling(20).mean().iloc[-1]
+                vol_ratio = latest["Volume"] / avg_vol if avg_vol > 0 else 1
+
+                price_move = abs(latest["PctChange"])  # % move
+                risk_boost = latest["RiskScore"] * 0.3  # use your own logic
+
+                score = (
+                    min(40, vol_ratio * 25) +
+                    min(30, price_move * 6) +
+                    min(30, risk_boost)
+                )
+
+                score = int(min(100, max(5, score)))
+                status = "Google blocked → Volume + Price + Risk model"
+
+            st.session_state.trend_score = score
+            st.session_state.trend_status = status
+
+    score = st.session_state.trend_score
+    status = st.session_state.trend_status
+
+    if score is None:
+        st.info("Click the button to analyze attention.")
+    else:
+        st.metric("Hype Score (0–100)", score)
+        st.write(f"Status: {status}")
+
+        if score >= 60:
+            st.success("🔥 High market attention")
+        elif score >= 30:
+            st.warning("🟠 Moderate attention")
+        else:
+            st.info("🟢 Low attention → Quiet zone")
 # ---------------- AUTO REFRESH ----------------
 if auto_refresh:
     time.sleep(60)
