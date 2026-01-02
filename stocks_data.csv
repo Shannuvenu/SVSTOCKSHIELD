@@ -1,0 +1,4 @@
+date,symbol,open,high,low,close,volume,delivery_percent
+2025-01-01,ABC,100,105,99,104,150000,45
+2025-01-01,XYZ,20,22,19,21.5,800000,72
+...

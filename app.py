@@ -1205,5 +1205,23 @@ if auto_refresh:
     time.sleep(60)
     st.experimental_rerun()
 
+st.markdown("### 🔗 Related Tools")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    if st.button("📊 Open StoxEye"):
+        st.markdown(
+            "<meta http-equiv='refresh' content='0; url=https://stoxeyeeee-zjlonjhaemcc8gdcemdfo8.streamlit.app/'>",
+            unsafe_allow_html=True
+        )
+
+with col2:
+    if st.button("🛡 Open Secure First"):
+        st.markdown(
+            "<meta http-equiv='refresh' content='0; url=https://secure-first-calculator-fthrymhqbqmtnhecft4rgc.streamlit.app/'>",
+            unsafe_allow_html=True
+        )    
+
 # ---------------- FOOTER ----------------
 st.markdown('<div class="footer">🛡️ Built with discipline and obsession by <b>venugAAdu</b>.</div>', unsafe_allow_html=True)
