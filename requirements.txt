@@ -6,3 +6,4 @@ plotly
 requests
 pytrends
 python-dotenv
+supabase

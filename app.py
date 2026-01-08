@@ -15,6 +15,144 @@ import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
 import requests
+from supabase import create_client
+import streamlit as st
+
+supabase = create_client(
+    st.secrets["SUPABASE_URL"],
+    st.secrets["SUPABASE_KEY"]
+)
+
+def auth_ui():
+    st.title("🔐 Login to SV STOCKSHIELD")
+
+    mode = st.radio("Choose", ["Login", "Sign Up"])
+    email = st.text_input("Email")
+    password = st.text_input("Password", type="password")
+
+    if st.button(mode):
+        try:
+            if mode == "Sign Up":
+                res = supabase.auth.sign_up({
+                    "email": email,
+                    "password": password
+                })
+
+                # ✅ THIS IS THE IMPORTANT PART
+                if res.user:
+                    st.success("Signup successful. Please login.")
+                else:
+                    st.error("Signup failed")
+
+            else:  # Login
+                res = supabase.auth.sign_in_with_password({
+                    "email": email,
+                    "password": password
+                })
+
+                if res.user:
+                    st.session_state["user"] = res.user
+                    st.rerun()
+                else:
+                    st.error("Login failed")
+
+        except Exception as e:
+            st.error(str(e))
+if "user" not in st.session_state:
+    auth_ui()
+    st.stop()
+with st.expander("📘 How to Use SV STOCKSHIELD (Read Once)"):
+    st.markdown("""
+### 🛡️ What is SV STOCKSHIELD?
+SV STOCKSHIELD is a **market intelligence & risk-awareness tool** built for retail traders.
+It does **NOT give buy/sell calls**.  
+It helps you understand **who controls the price**, **where risk is hiding**, and **when NOT to trade**.
+
+---
+
+### 🔍 Core Philosophy
+> **Risk management is real profit.**  
+If you can avoid bad trades, profits take care of themselves.
+
+---
+
+## 📊 MODULES EXPLAINED
+
+### 1️⃣ Candlesticks & Setup
+- Shows **price + volume behavior**
+- Helps spot:
+  - Fake breakouts  
+  - Weak rallies  
+  - Distribution candles  
+- Use this to judge **price honesty**, not direction.
+
+---
+
+### 2️⃣ Operator Risk Scanner
+- Detects **abnormal volume, candle traps & sudden spikes**
+- Answers one question:
+  > *Is smart money active here or is retail being trapped?*
+- If risk is HIGH → **stay away**
+
+---
+
+### 3️⃣ Market Hype (Google Trends)
+- Measures **public attention**, not fundamentals
+- High hype = emotional crowd
+- Low hype = quiet accumulation zone
+- Use hype to **avoid FOMO**, not chase it
+
+---
+
+### 4️⃣ Fundamentals
+- Pulls **company financials, ratios & quarterly data**
+- Use this to check:
+  - Valuation sanity  
+  - Financial stability  
+- Fundamentals tell **WHAT to hold**, not WHEN to enter
+
+---
+
+### 5️⃣ Alerts Engine
+- Combines multiple signals
+- Green = no immediate danger  
+- Red = something is off → slow down
+
+---
+
+## 🔗 RELATED TOOLS (ECOSYSTEM)
+
+### 📊 StoxEye
+- Fast visual scanner
+- Designed for **quick market overview**
+- Use it when you want speed, not depth
+
+### 🛡️ Secure First Calculator
+- Position sizing & capital protection tool
+- Tells you:
+  - How much to risk  
+  - How much you can lose safely  
+- Use **before every trade**
+> Capital protection comes first. Always.
+
+---
+
+## ⚠️ IMPORTANT DISCLAIMERS
+- This is **not financial advice**
+- No buy/sell recommendations
+- This tool helps you **think**, not follow
+
+---
+
+## 🧠 How to Use Like a Pro
+1. Check **risk first**
+2. Then check **price + volume**
+3. Then confirm with **fundamentals**
+4. Use **Secure First** before entering
+5. If confused → **do nothing**
+
+> Doing nothing is also a position.
+""")                    
 quotes = [
     "Trade the plan, not emotions.",
     "Capital protection comes first.",
@@ -1225,3 +1363,7 @@ with col2:
 
 # ---------------- FOOTER ----------------
 st.markdown('<div class="footer">🛡️ Built with discipline and obsession by <b>venugAAdu</b>.</div>', unsafe_allow_html=True)
+with st.sidebar:
+    if st.button("🚪 Logout"):
+        st.session_state.clear()
+        st.rerun()
