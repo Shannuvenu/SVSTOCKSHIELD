@@ -482,9 +482,118 @@ def backtest_risk_accuracy(df):
     return total, accuracy
 
 
+# ================= ML RISK PREDICTION MODEL =================
+from sklearn.ensemble import RandomForestClassifier
+
+def train_risk_model(df):
+    df_ml = df.copy()
+
+    # Target: Did price fall in next 3 candles?
+    df_ml["FutureDrop"] = df_ml["Close"].shift(-3) < df_ml["Close"]
+
+    df_ml = df_ml.dropna()
+
+    features = ["Volume", "PctChange", "RiskScore"]
+    X = df_ml[features]
+    y = df_ml["FutureDrop"].astype(int)
+
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model.fit(X, y)
+
+    return model
+
+
+def predict_next_risk(model, latest_row):
+    features = ["Volume", "PctChange", "RiskScore"]
+    X_pred = latest_row[features].values.reshape(1, -1)
+    pred = model.predict(X_pred)[0]
+
+    return "High Chance of Fall 📉" if pred == 1 else "Low Risk of Fall 📈"
+
+# =============================================================
 
 df = calc_risk_from_raw(data_raw).reset_index()
 df["CandleTag"] = df.apply(tag_candle, axis=1)
+# Train ML model
+ml_model = train_risk_model(df)
+ml_prediction = predict_next_risk(ml_model, df.iloc[-1])
+
+# =============================================================
+# ================= AI / ML STOCK RISK REPORT ENGINE =================
+
+def compute_volatility_risk(df):
+    vol = df["PctChange"].abs().mean()
+    if vol > 3:
+        return "High"
+    elif vol > 1.5:
+        return "Medium"
+    else:
+        return "Low"
+
+
+def compute_bubble_risk(df):
+    ma30 = df["Close"].rolling(30).mean().iloc[-1]
+    price = df["Close"].iloc[-1]
+
+    if price > ma30 * 1.25:
+        return "High"
+    elif price > ma30 * 1.10:
+        return "Medium"
+    else:
+        return "Low"
+
+
+def compute_fundamental_risk(info):
+    try:
+        pe = info.get("trailingPE", 0) or 0
+        roe = info.get("returnOnEquity", 0) or 0
+        debt = info.get("debtToEquity", 0) or 0
+
+        score = 0
+        if pe > 40:
+            score += 1
+        if roe < 0.10:
+            score += 1
+        if debt > 1:
+            score += 1
+
+        if score >= 2:
+            return "High"
+        elif score == 1:
+            return "Medium"
+        else:
+            return "Low"
+    except:
+        return "Unknown"
+
+
+def generate_stock_risk_report(df, info):
+    operator_risk = df["RiskLevel"].iloc[-1]
+    volatility_risk = compute_volatility_risk(df)
+    bubble_risk = compute_bubble_risk(df)
+    fundamental_risk = compute_fundamental_risk(info)
+
+    risks = [operator_risk, volatility_risk, bubble_risk, fundamental_risk]
+    high_count = risks.count("High")
+
+    if high_count >= 3:
+        verdict = "EXTREME RISK — Avoid Entry"
+    elif high_count == 2:
+        verdict = "HIGH RISK — Trade Carefully"
+    elif "High" in risks:
+        verdict = "MODERATE RISK — Observe"
+    else:
+        verdict = "LOW RISK — Safe Zone"
+
+    return {
+        "Operator Risk": operator_risk,
+        "Volatility Risk": volatility_risk,
+        "Bubble Risk": bubble_risk,
+        "Fundamental Risk": fundamental_risk,
+        "Final Verdict": verdict,
+    }
+
+# =====================================================================
 
 
 def alert_engine(df):
@@ -654,20 +763,43 @@ with tab_risk:
     else:
         summary_lines.append("🟢 No strong manipulation cluster.")
     st.markdown("\n\n".join(summary_lines))
+    # ================= STOCK RISK REPORT DISPLAY =================
 
-    st.markdown("### 📈 Suspicion Timeline (Risk Score)")
-    fig_risk = go.Figure([go.Scatter(x=df[time_col], y=df["RiskScore"], mode="lines+markers", line=dict(color="#d32f2f"))])
-    fig_risk.update_layout(template="plotly_dark", height=320)
-    st.plotly_chart(fig_risk, use_container_width=True, key=f"risk_plot_{symbol}")
+st.markdown("## 🧠 AI Stock Risk Report")
 
-    st.markdown("### 🔢 Candle-wise risk table")
-    df_show = df[[time_col, "Close", "Volume", "PctChange", "VolumeSpike", "PriceSpike", "TrendRun", "RiskScore", "RiskLevel"]].copy()
-    df_show["PctChange"] = df_show["PctChange"].round(2)
-    for coln in ["VolumeSpike", "PriceSpike", "TrendRun"]:
-        df_show[coln] = df_show[coln].map({True: "Yes", False: "No"})
-    st.dataframe(df_show, use_container_width=True)
-    st.download_button("Download risk table CSV", df_show.to_csv(index=False).encode("utf-8"), f"risk_table_{symbol}.csv", "text/csv", key=f"download_risk_table_{symbol}")
-    total, accuracy = backtest_risk_accuracy(df)
+try:
+    yf_info = yf.Ticker(symbol).info
+except:
+    yf_info = {}
+
+report = generate_stock_risk_report(df, yf_info)
+
+c1, c2, c3, c4 = st.columns(4)
+
+c1.metric("Operator Risk", report["Operator Risk"])
+c2.metric("Volatility Risk", report["Volatility Risk"])
+c3.metric("Bubble Risk", report["Bubble Risk"])
+c4.metric("Fundamental Risk", report["Fundamental Risk"])
+
+st.markdown(f"### 🧾 Final Verdict: **{report['Final Verdict']}**")
+st.markdown("## 🤖 ML Prediction")
+st.success(f"Next 3 candles prediction: **{ml_prediction}**")
+
+# ==============================================================
+
+st.markdown("### 📈 Suspicion Timeline (Risk Score)")
+fig_risk = go.Figure([go.Scatter(x=df[time_col], y=df["RiskScore"], mode="lines+markers", line=dict(color="#d32f2f"))])
+fig_risk.update_layout(template="plotly_dark", height=320)
+st.plotly_chart(fig_risk, use_container_width=True, key=f"risk_plot_{symbol}")
+
+st.markdown("### 🔢 Candle-wise risk table")
+df_show = df[[time_col, "Close", "Volume", "PctChange", "VolumeSpike", "PriceSpike", "TrendRun", "RiskScore", "RiskLevel"]].copy()
+df_show["PctChange"] = df_show["PctChange"].round(2)
+for coln in ["VolumeSpike", "PriceSpike", "TrendRun"]:
+    df_show[coln] = df_show[coln].map({True: "Yes", False: "No"})
+st.dataframe(df_show, use_container_width=True)
+st.download_button("Download risk table CSV", df_show.to_csv(index=False).encode("utf-8"), f"risk_table_{symbol}.csv", "text/csv", key=f"download_risk_table_{symbol}")
+total, accuracy = backtest_risk_accuracy(df)
 
 st.markdown("### 📈 Risk Backtesting")
 st.write(f"Samples: **{total}**")
