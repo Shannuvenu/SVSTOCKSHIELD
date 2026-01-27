@@ -17,6 +17,66 @@ import plotly.graph_objects as go
 import requests
 from supabase import create_client
 import streamlit as st
+# ================= EXPLAINABLE AI RISK ENGINE =================
+
+def explain_index_score(rsi, macd, volatility, score):
+    reasons = []
+
+    if rsi > 70:
+        reasons.append("RSI is in overbought zone indicating buying exhaustion.")
+    elif rsi < 30:
+        reasons.append("RSI is in oversold zone indicating panic selling.")
+    else:
+        reasons.append("RSI is neutral showing market indecision.")
+
+    if macd < 0:
+        reasons.append("MACD shows bearish momentum building.")
+    else:
+        reasons.append("MACD still positive but weakening.")
+
+    if volatility > 2:
+        reasons.append("Volatility expansion suggests unstable market conditions.")
+    else:
+        reasons.append("Low volatility shows hidden risk building silently.")
+
+    reasons.append(f"These combined signals produced the Index Risk Score of {score}.")
+
+    return reasons[:2]
+
+def market_problem_mapper(df, latest_row):
+    problems = []
+
+    # Repeated high risk candles
+    recent_high_risk = df.tail(7)["RiskScore"]
+    if (recent_high_risk >= 60).sum() >= 3:
+        problems.append("Repeated high-risk candles in recent sessions → possible operator activity.")
+
+    # Volume spike + price spike combo
+    if latest_row["VolumeSpike"] == "Yes" and latest_row["PriceSpike"] == "Yes":
+        problems.append("Simultaneous price spike and volume spike → unnatural move detected.")
+
+    # Continuous trend run
+    if latest_row["TrendRun"] == "Yes":
+        problems.append("Extended one-sided trend run → potential trapping phase.")
+
+    # Integrity drop
+    if latest_row["RiskScore"] >= 70:
+        problems.append("Integrity of price action is weak → market behaviour not fully organic.")
+
+    # Too many medium risks recently
+    recent_medium = df.tail(10)["RiskScore"]
+    if ((recent_medium >= 40) & (recent_medium < 60)).sum() >= 5:
+        problems.append("Frequent medium-risk candles → unstable price structure.")
+
+    if not problems:
+        problems.append("No abnormal market behaviour detected. Price action looks organic.")
+
+    return problems
+
+
+
+
+# ================= SUPABASE AUTHENTICATION ================= 
 
 supabase = create_client(
     st.secrets["SUPABASE_URL"],
@@ -209,6 +269,42 @@ def call_fmp(path: str, params: dict = None):
     except Exception:
         return None
     return None
+
+def explain_risk_with_system_features(df):
+    latest = df.iloc[-1]
+    reasons = []
+
+    # Volume anomaly
+    if latest["VolumeSpike"] == "Yes":
+        reasons.append("Unusual volume spike detected without proportional price structure.")
+
+    # Price spike
+    if latest["PriceSpike"] == "Yes":
+        reasons.append("Abnormal price movement observed indicating possible operator push/pull.")
+
+    # Trend run
+    if latest["TrendRun"] == "Yes":
+        reasons.append("Extended one-side candle run detected — typical in operator-driven moves.")
+
+    # Recent risk history
+    recent_high_risk = df.tail(10)["RiskLevel"].tolist().count("High")
+    if recent_high_risk >= 3:
+        reasons.append("Multiple high-risk candles in recent sessions showing repeated suspicious activity.")
+
+    # Integrity score impact
+    integrity_score = 100 - df["RiskScore"].mean()
+    if integrity_score < 75:
+        reasons.append("Integrity score dropped due to irregular candle behaviour and volatility pattern.")
+
+    # Operator pattern hint
+    high_spike_days = df[df["VolumeSpike"] == "Yes"].shape[0]
+    if high_spike_days >= 5:
+        reasons.append("Historical pattern match: Volume spike followed by instability (operator fingerprint).")
+
+    if not reasons:
+        reasons.append("No major operator or manipulation pattern detected in current structure.")
+
+    return reasons
 
 
 # ---------------- STYLE / THEME ----------------
@@ -504,6 +600,10 @@ def train_risk_model(df):
 
 
 def predict_next_risk(model, latest_row):
+    # MASTER CONTROL
+    if latest_row["RiskScore"] >= 70:
+        return "High Chance of Fall 📉 (Manipulation Detected)"
+
     features = ["Volume", "PctChange", "RiskScore"]
     X_pred = latest_row[features].values.reshape(1, -1)
     pred = model.predict(X_pred)[0]
@@ -511,10 +611,26 @@ def predict_next_risk(model, latest_row):
     return "High Chance of Fall 📉" if pred == 1 else "Low Risk of Fall 📈"
 
 # =============================================================
+# ============ RISK ENGINE + EXPLAINABLE AI + ML =============
+# =============================================================
 
 df = calc_risk_from_raw(data_raw).reset_index()
 df["CandleTag"] = df.apply(tag_candle, axis=1)
-# Train ML model
+
+# ---------------- EXPLAINABLE AI VALUES ----------------
+index_score = df["RiskScore"].iloc[-1]
+
+rsi_value = df['RSI'].iloc[-1] if 'RSI' in df.columns else 50
+macd_value = df['MACD'].iloc[-1] if 'MACD' in df.columns else 0
+volatility_value = df['PctChange'].abs().mean()
+fii_flow = 0
+
+reasons = explain_risk_with_system_features(df)
+
+latest = df.iloc[-1]
+problems = market_problem_mapper(df, latest)
+
+# ---------------- ML MODEL ----------------
 ml_model = train_risk_model(df)
 ml_prediction = predict_next_risk(ml_model, df.iloc[-1])
 
@@ -522,6 +638,12 @@ ml_prediction = predict_next_risk(ml_model, df.iloc[-1])
 # ================= AI / ML STOCK RISK REPORT ENGINE =================
 
 def compute_volatility_risk(df):
+    latest_risk = df["RiskScore"].iloc[-1]
+
+    # MASTER CONTROL
+    if latest_risk >= 70:
+        return "High"
+
     vol = df["PctChange"].abs().mean()
     if vol > 3:
         return "High"
@@ -532,6 +654,12 @@ def compute_volatility_risk(df):
 
 
 def compute_bubble_risk(df):
+    latest_risk = df["RiskScore"].iloc[-1]
+
+    # MASTER CONTROL
+    if latest_risk >= 70:
+        return "High"
+
     ma30 = df["Close"].rolling(30).mean().iloc[-1]
     price = df["Close"].iloc[-1]
 
@@ -567,8 +695,69 @@ def compute_fundamental_risk(info):
         return "Unknown"
 
 
-def generate_stock_risk_report(df, info):
-    operator_risk = df["RiskLevel"].iloc[-1]
+def generate_stock_risk_report(df, info, integrity_score, problems, ml_prediction):
+    latest = df.iloc[-1]
+    risk_score = latest["RiskScore"]
+
+    # ---------------- OPERATOR RISK ----------------
+    if risk_score >= 70:
+        operator_risk = "High"
+    elif risk_score >= 40:
+        operator_risk = "Medium"
+    else:
+        operator_risk = "Low"
+
+    # ---------------- OTHER RISKS ----------------
+    volatility_risk = compute_volatility_risk(df)
+    bubble_risk = compute_bubble_risk(df)
+    fundamental_risk = compute_fundamental_risk(info)
+
+    # ---------------- SMART VERDICT LOGIC ----------------
+    # Verdict must depend on risk engines first, not text
+
+    risks = [operator_risk, volatility_risk, bubble_risk, fundamental_risk]
+
+    high = risks.count("High")
+    medium = risks.count("Medium")
+
+    if high >= 3:
+        verdict = "EXTREME RISK — Multiple Risk Factors Aligned"
+
+    elif high == 2:
+        verdict = "HIGH RISK — Strong Warning Signals"
+
+    elif high == 1 and medium >= 1:
+        verdict = "MODERATE RISK — Mixed Signals Present"
+
+    elif integrity_score < 60:
+        verdict = "MODERATE RISK — Weak Price Integrity"
+
+    elif "high chance of fall" in ml_prediction.lower():
+        verdict = "MODERATE RISK — Bearish Probability Ahead"
+
+    else:
+        verdict = "LOW RISK — Price Action Looks Organic"
+
+    return {
+        "Operator Risk": operator_risk,
+        "Volatility Risk": volatility_risk,
+        "Bubble Risk": bubble_risk,
+        "Fundamental Risk": fundamental_risk,
+        "Final Verdict": verdict,
+    }
+
+    # ================= MASTER CONTROL =================
+    # If operator manipulation is High, all other risks are automatically serious
+    if operator_risk == "High":
+        return {
+            "Operator Risk": "High",
+            "Volatility Risk": "High",
+            "Bubble Risk": "High",
+            "Fundamental Risk": "Check Fundamentals",
+            "Final Verdict": "EXTREME RISK — Operator Activity Detected",
+        }
+    # ==================================================
+
     volatility_risk = compute_volatility_risk(df)
     bubble_risk = compute_bubble_risk(df)
     fundamental_risk = compute_fundamental_risk(info)
@@ -592,7 +781,6 @@ def generate_stock_risk_report(df, info):
         "Fundamental Risk": fundamental_risk,
         "Final Verdict": verdict,
     }
-
 # =====================================================================
 
 
@@ -641,6 +829,20 @@ with tab_risk:
         max_row = df.loc[max_idx]
         st.markdown("**Peak Risk in Selected Period**")
         st.write(f"Score **{int(max_row['RiskScore'])}** on **{pd.to_datetime(max_row[time_col]).date()}**")
+        st.markdown("---")
+
+    st.markdown("### 🔍 Why this Risk Score?")
+    for r in reasons:
+        st.write("•", r)
+
+    st.markdown("### 🌍 Market Problems Detected")
+    for p in problems:
+        st.write("•", p)
+
+    st.markdown("### 🤖 ML Prediction")
+    st.info(ml_prediction)
+
+    st.markdown("---")
 
     def compute_integrity_score(df_local: pd.DataFrame) -> int:
         if df_local.empty:
@@ -772,7 +974,16 @@ try:
 except:
     yf_info = {}
 
-report = generate_stock_risk_report(df, yf_info)
+info = yf_info
+integrity_score = int(df["RiskScore"].mean())
+
+report = generate_stock_risk_report(
+    df,
+    info,
+    integrity_score,
+    problems,
+    ml_prediction
+)
 
 c1, c2, c3, c4 = st.columns(4)
 
