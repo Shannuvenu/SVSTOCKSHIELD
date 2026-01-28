@@ -8,15 +8,36 @@ import time
 from io import BytesIO
 from typing import Optional, Tuple, Dict, Any, List
 from pytrends.request import TrendReq
+from io import BytesIO
 
 import pandas as pd
 import numpy as np
 import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
+import plotly.express as px
 import requests
+import openpyxl
 from supabase import create_client
 import streamlit as st
+def portfolio_correlation_analysis(symbols):
+    price_data = {}
+
+    for sym in symbols:
+        df = yf.download(sym, period="1y", interval="1d", progress=False)
+        if not df.empty:
+            price_data[sym] = df["Close"]
+
+    prices = pd.DataFrame(price_data).dropna()
+    returns = prices.pct_change().dropna()
+
+    corr_matrix = returns.corr()
+
+    avg_corr = corr_matrix.values[np.triu_indices_from(corr_matrix.values, 1)].mean()
+
+    volatility = returns.std().mean()
+
+    return corr_matrix, avg_corr, volatility
 # ================= EXPLAINABLE AI RISK ENGINE =================
 
 def explain_index_score(rsi, macd, volatility, score):
@@ -42,40 +63,6 @@ def explain_index_score(rsi, macd, volatility, score):
     reasons.append(f"These combined signals produced the Index Risk Score of {score}.")
 
     return reasons[:2]
-
-def market_problem_mapper(df, latest_row):
-    problems = []
-
-    # Repeated high risk candles
-    recent_high_risk = df.tail(7)["RiskScore"]
-    if (recent_high_risk >= 60).sum() >= 3:
-        problems.append("Repeated high-risk candles in recent sessions → possible operator activity.")
-
-    # Volume spike + price spike combo
-    if latest_row["VolumeSpike"] == "Yes" and latest_row["PriceSpike"] == "Yes":
-        problems.append("Simultaneous price spike and volume spike → unnatural move detected.")
-
-    # Continuous trend run
-    if latest_row["TrendRun"] == "Yes":
-        problems.append("Extended one-sided trend run → potential trapping phase.")
-
-    # Integrity drop
-    if latest_row["RiskScore"] >= 70:
-        problems.append("Integrity of price action is weak → market behaviour not fully organic.")
-
-    # Too many medium risks recently
-    recent_medium = df.tail(10)["RiskScore"]
-    if ((recent_medium >= 40) & (recent_medium < 60)).sum() >= 5:
-        problems.append("Frequent medium-risk candles → unstable price structure.")
-
-    if not problems:
-        problems.append("No abnormal market behaviour detected. Price action looks organic.")
-
-    return problems
-
-
-
-
 # ================= SUPABASE AUTHENTICATION ================= 
 
 supabase = create_client(
@@ -242,6 +229,66 @@ if "watchlist" not in st.session_state:
 
 # ---------------- CONFIG & KEYS ----------------
 st.set_page_config(page_title="S V STOCKSHIELD", page_icon="📈", layout="wide")
+st.markdown("""
+<style>
+
+/* ---------- GLOBAL ---------- */
+body {
+    background-color: #0e1117;
+}
+
+/* ---------- MAIN TITLE GLOW ---------- */
+.title-glow {
+    color: #ff2b2b;
+    text-shadow: 0 0 12px #ff2b2b;
+    font-weight: 700;
+}
+
+/* ---------- CARD BOX (no red border) ---------- */
+.ui-card {
+    background: #161b22;
+    padding: 18px;
+    border-radius: 12px;
+    box-shadow: 0 0 10px rgba(255,255,255,0.05);
+    margin-bottom: 16px;
+}
+
+/* ---------- INDEX CARDS ---------- */
+.index-card {
+    background: #161b22;
+    padding: 16px;
+    border-radius: 14px;
+    text-align: center;
+    box-shadow: 0 0 12px rgba(0,255,100,0.08);
+}
+
+/* ---------- TAB BUTTON STYLE ---------- */
+.stTabs [data-baseweb="tab"] {
+    background: #161b22;
+    border-radius: 10px;
+    padding: 8px 14px;
+    margin-right: 6px;
+}
+
+/* ---------- BUTTON STYLE ---------- */
+.stButton>button {
+    background: #1f2630;
+    border-radius: 10px;
+    border: 1px solid #2c3440;
+}
+
+/* ---------- THEORY / CONTENT BOX ---------- */
+.content-box {
+    background: #141922;
+    padding: 20px;
+    border-radius: 12px;
+    line-height: 1.6;
+    box-shadow: 0 0 8px rgba(255,255,255,0.04);
+    margin-bottom: 14px;
+}
+
+</style>
+""", unsafe_allow_html=True)
 
 # load FMP API key from streamlit secrets or environment
 FMP_API_KEY = None
@@ -270,75 +317,158 @@ def call_fmp(path: str, params: dict = None):
         return None
     return None
 
-def explain_risk_with_system_features(df):
-    latest = df.iloc[-1]
-    reasons = []
+def market_problem_mapper(df, latest_row):
+    problems = []
 
-    # Volume anomaly
-    if latest["VolumeSpike"] == "Yes":
-        reasons.append("Unusual volume spike detected without proportional price structure.")
+    if latest_row["VolumeSpike"] and not latest_row["PriceSpike"]:
+        problems.append("High volume without price move → accumulation/distribution.")
 
-    # Price spike
-    if latest["PriceSpike"] == "Yes":
-        reasons.append("Abnormal price movement observed indicating possible operator push/pull.")
+    if latest_row["PriceSpike"] and not latest_row["VolumeSpike"]:
+        problems.append("Price spike without volume support → weak/fake move.")
 
-    # Trend run
-    if latest["TrendRun"] == "Yes":
-        reasons.append("Extended one-side candle run detected — typical in operator-driven moves.")
+    if latest_row["TrendRun"]:
+        problems.append("Extended one-side trend — retail may enter late.")
 
-    # Recent risk history
-    recent_high_risk = df.tail(10)["RiskLevel"].tolist().count("High")
-    if recent_high_risk >= 3:
-        reasons.append("Multiple high-risk candles in recent sessions showing repeated suspicious activity.")
+    if latest_row["RiskScore"] >= 70:
+        problems.append("Current structure shows manipulation characteristics.")
 
-    # Integrity score impact
-    integrity_score = 100 - df["RiskScore"].mean()
-    if integrity_score < 75:
-        reasons.append("Integrity score dropped due to irregular candle behaviour and volatility pattern.")
+    if not problems:
+        problems.append("No abnormal market behaviour detected. Price action looks organic.")
 
-    # Operator pattern hint
-    high_spike_days = df[df["VolumeSpike"] == "Yes"].shape[0]
-    if high_spike_days >= 5:
-        reasons.append("Historical pattern match: Volume spike followed by instability (operator fingerprint).")
-
-    if not reasons:
-        reasons.append("No major operator or manipulation pattern detected in current structure.")
-
-    return reasons
+    return problems
 
 
 # ---------------- STYLE / THEME ----------------
-st.markdown(
-    """
-    <style>
-    :root {
-        --bg: #000000;
-        --card: #070707;
-        --muted: #9aa0a6;
-        --accent: #d32f2f;
-        --panel: #0b0b0b;
-        --glass: rgba(255,255,255,0.03);
-    }
-    html, body, [class*="css"] {
-        background: var(--bg) !important;
-        color: #ffffff;
-        font-family: Inter, "Segoe UI", Roboto, "Helvetica Neue", Arial;
-    }
-    .big-title { font-size: 28px; font-weight:800; color:#fff; }
-    .subtitle { color: #bdbdbd; margin-bottom: 8px; }
-    .metric-card { background: var(--card); padding: 12px; border-radius: 10px; border: 1px solid #111; }
-    .fund-card { background: var(--panel); padding: 10px; border-radius:8px; border:1px solid #111; }
-    .manip-badge { padding:6px 10px; border-radius:999px; font-weight:700; }
-    .risk-high { color: #ff4d4d; font-weight:700; }
-    .risk-medium { color: #ffcc33; font-weight:700; }
-    .risk-low { color: #33dd77; font-weight:700; }
-    .footer { color:#9aa0a6; margin-top:16px; text-align:center; }
-    .muted { color: var(--muted); }
-    .stButton>button { background: transparent; border: 1px solid #222; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+st.markdown("""
+<style>
+
+/* ===== GLOBAL DARK THEME ===== */
+html, body, [class*="css"] {
+    background-color: #000000 !important;
+    color: white !important;
+    font-family: 'Segoe UI', sans-serif;
+}
+
+/* ===== RED GLOW CARDS ===== */
+.metric-card, .fund-card {
+    background: #0a0a0a;
+    border: 1px solid #ff1a1a;
+    border-radius: 12px;
+    padding: 15px;
+    box-shadow: 0 0 15px rgba(255,0,0,0.4);
+    transition: 0.3s;
+}
+
+.metric-card:hover, .fund-card:hover {
+    box-shadow: 0 0 25px rgba(255,0,0,0.8);
+    transform: scale(1.02);
+}
+
+/* ===== BUTTON STYLE ===== */
+.stButton>button {
+    background-color: #0a0a0a;
+    color: white;
+    border: 1px solid #ff1a1a;
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-weight: bold;
+    transition: 0.3s;
+}
+            
+.index-card {
+    background: #111111;
+    border-radius: 14px;
+    padding: 18px;
+    box-shadow: 0 0 12px rgba(0,0,0,0.6);
+    border: 1px solid #222;
+    text-align: center;
+}
+
+.index-card h4 {
+    color: #bbbbbb;
+    margin-bottom: 6px;
+    font-weight: 500;
+}
+
+.index-card h2 {
+    color: white;
+    margin: 4px 0;
+    font-size: 26px;
+}
+
+.index-card p {
+    margin: 0;
+    font-size: 14px;
+    color: #4caf50;  /* green for change */
+}            
+
+.stButton>button:hover {
+    background-color: #ff1a1a;
+    color: black;
+    box-shadow: 0 0 20px #ff1a1a;
+}
+
+.content-box {
+    background: #111111;
+    border-radius: 12px;
+    padding: 18px;
+    border: 1px solid #222;
+    box-shadow: 0 0 10px rgba(0,0,0,0.6);
+    margin-bottom: 14px;
+}
+
+.content-box h3 {
+    margin-top: 0;
+    color: #ffffff;
+}
+
+.content-box p {
+    color: #cccccc;
+    line-height: 1.6;
+}
+
+/* ===== TABS ===== */
+button[data-baseweb="tab"] {
+    background-color: #0a0a0a !important;
+    border: 1px solid #ff1a1a !important;
+    color: white !important;
+    border-radius: 6px 6px 0 0 !important;
+}
+
+button[data-baseweb="tab"]:hover {
+    box-shadow: 0 0 10px #ff1a1a;
+}
+
+/* ===== EXPANDERS ===== */
+details {
+    border: 1px solid #ff1a1a;
+    border-radius: 8px;
+    padding: 10px;
+    box-shadow: 0 0 10px rgba(255,0,0,0.4);
+}
+
+/* ===== INPUT BOXES ===== */
+input, textarea {
+    background-color: #0a0a0a !important;
+    border: 1px solid #ff1a1a !important;
+    color: white !important;
+}
+
+/* ===== TITLE GLOW ===== */
+.big-title {
+    font-size: 30px;
+    font-weight: 800;
+    color: #ff1a1a;
+    text-shadow: 0 0 15px #ff1a1a;
+}
+
+/* ===== SUBTITLE ===== */
+.subtitle {
+    color: #bbbbbb;
+}
+
+</style>
+""", unsafe_allow_html=True)
 
 # ---------------- HELPERS ----------------
 def fetch_google_trends_score(keyword):
@@ -406,8 +536,8 @@ with col_logo:
     if os.path.exists(logo_path):
         st.image(logo_path, width=72)
 with col_title:
-    st.markdown('<div class="big-title">📈 S V STOCKSHIELD</div>', unsafe_allow_html=True)
-    st.markdown('<div class="subtitle">Live Candlesticks • Operator Manipulation Scanner • Watchlist & Forensics</div>', unsafe_allow_html=True)
+    st.markdown('<div class="big-title">🛡️ S V STOCKSHIELD</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle">AI Powered Market Manipulation & Risk Intelligence Terminal</div>', unsafe_allow_html=True)
 
 st.write("")
 
@@ -447,89 +577,71 @@ with c4:
     auto_refresh = st.checkbox("⏱ Auto-refresh (60s)", value=False)
 
 st.write("")
+# ================= ML RISK PREDICTION MODEL =================
+from sklearn.ensemble import RandomForestClassifier
 
-# ---------------- TABS ----------------
-(tab_setup, tab_risk, tab_watch, tab_fii, tab_adv, tab_hype, tab_fundamentals) = st.tabs(
-    ["📉 Candlesticks & Setup", "🚨 Operator Risk Scanner", "📋 Multi-Stock & Sector Risk", "💰 FII / DII Flows", "🧬 Advanced Forensics", "🔥 Market Hype", "📚 Fundamentals"]
-)
+def train_risk_model(df):
+    df_ml = df.copy()
 
-# ---------------- TAB 1: Candles & Setup ----------------
-with tab_setup:
-    st.subheader("Chart Setup")
-    col_l, col_r = st.columns([1.3, 1])
-    with col_l:
-        symbol = st.text_input("Stock symbol (e.g., RELIANCE.NS)", value="RELIANCE.NS")
-        period = st.selectbox("History period", ["5d", "1mo", "3mo", "6mo", "1y"], index=2)
-        interval = st.selectbox("Candle timeframe", ["5m", "15m", "30m", "60m", "1d"], index=4)
-    with col_r:
-        st.markdown("**Notes**")
-        st.markdown("- Use `.NS` for NSE, `.BO` for BSE.")
-        st.markdown("- Intraday intervals (5m..60m) work best with short periods.")
-        st.markdown("- Daily candles work with 3mo+.")
-    st.markdown("---")
+    # Target: Did price fall in next 3 candles?
+    df_ml["FutureDrop"] = df_ml["Close"].shift(-3) < df_ml["Close"]
 
-    if not symbol.strip():
-        st.warning("Enter a valid stock symbol to load the chart.")
-    else:
-        try:
-            data_raw = yf.download(symbol.strip(), period=period, interval=interval, progress=False)
-        except Exception as e:
-            st.error(f"Failed to fetch data: {e}")
-            st.stop()
-        if data_raw is None or data_raw.empty:
-            st.error("No data returned. Try another symbol / period / timeframe.")
-            st.stop()
-        # flatten multiindex columns if present
-        if isinstance(data_raw.columns, pd.MultiIndex):
-            data_raw.columns = [c[0] for c in data_raw.columns]
-        data = data_raw.reset_index()
-        time_col = data.columns[0]
-        # store in session
-        st.session_state["symbol"] = symbol.strip()
-        st.session_state["data_raw"] = data_raw
-        st.session_state["data"] = data
-        st.session_state["time_col"] = time_col
+    df_ml = df_ml.dropna()
 
-        st.subheader("📊 Candlestick Chart")
-        # robust candlestick plotting
-        df_plot = data.copy()
-        if set(["Open", "High", "Low", "Close"]).issubset(df_plot.columns):
-            fig = go.Figure(data=[go.Candlestick(
-                x=df_plot[time_col],
-                open=df_plot["Open"],
-                high=df_plot["High"],
-                low=df_plot["Low"],
-                close=df_plot["Close"],
-                increasing_line_color="#33aa44",
-                decreasing_line_color="#d32f2f"
-            )])
-            fig.update_layout(template="plotly_dark", height=520, xaxis_title="Time", yaxis_title="Price")
-            st.plotly_chart(fig, use_container_width=True, key=f"top_candle_{symbol.strip()}")
-            with st.expander("📄 Show OHLCV data"):
-                st.dataframe(df_plot, use_container_width=True)
-        else:
-            st.info("Insufficient OHLC data for candlestick chart.")
+    features = ["Volume", "PctChange", "RiskScore"]
+    X = df_ml[features]
+    y = df_ml["FutureDrop"].astype(int)
 
-# ensure later tabs have data to work with
-if "data_raw" not in st.session_state:
-    st.stop()
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model.fit(X, y)
 
-symbol = st.session_state["symbol"]
-data_raw = st.session_state["data_raw"]
-data = st.session_state["data"]
-time_col = st.session_state["time_col"]
+    return model
 
+
+def predict_next_risk(model, latest_row):
+    # MASTER CONTROL
+    if latest_row["RiskScore"] >= 70:
+        return "High Chance of Fall 📉 (Manipulation Detected)"
+
+    features = ["Volume", "PctChange", "RiskScore"]
+    X_pred = latest_row[features].values.reshape(1, -1)
+    pred = model.predict(X_pred)[0]
+
+    return "High Chance of Fall 📉" if pred == 1 else "Low Risk of Fall 📈"
+
+# ---------- SESSION INIT ----------
 # ---------------- RISK HELPERS ----------------
+def explain_risk_with_system_features(df):
+    latest = df.iloc[-1]
+    reasons = []
+
+    if latest["VolumeSpike"]:
+        reasons.append("Unusual volume activity compared to recent average.")
+
+    if latest["PriceSpike"]:
+        reasons.append("Sharp price movement detected in current candle.")
+
+    if latest["TrendRun"]:
+        reasons.append("Continuous directional candles showing momentum build-up.")
+
+    if latest["RiskScore"] >= 70:
+        reasons.append("Multiple risk signals combined — possible operator activity.")
+
+    if not reasons:
+        reasons.append("Price and volume behaviour look normal and organic.")
+
+    return reasons
 def calc_risk_from_raw(df_raw: pd.DataFrame) -> pd.DataFrame:
     df = df_raw.copy().reset_index()
     df["PrevClose"] = df["Close"].shift(1)
     df["PctChange"] = ((df["Close"] - df["PrevClose"]) / df["PrevClose"].abs()) * 100
     df["VolAvg5"] = df["Volume"].rolling(5).mean()
-    df["VolumeSpike"] = df["Volume"] > 1.5 * df["VolAvg5"]
-    df["PriceSpike"] = df["PctChange"].abs() > 2.0
+    df["VolAvg10"] = df["Volume"].rolling(10).mean()
+    df["VolumeSpike"] = df["Volume"] > 1.2 * df["VolAvg10"]
+    df["PriceSpike"] = df["PctChange"].abs() > 1.2
     df["Up"] = df["Close"] > df["PrevClose"]
     df["Streak"] = df["Up"].groupby((df["Up"] != df["Up"].shift()).cumsum()).cumsum()
-    df["TrendRun"] = df["Streak"] >= 2
+    df["TrendRun"] = df["Streak"] >= 3
     df["RiskScore"] = df["VolumeSpike"].astype(int) * 30 + df["PriceSpike"].astype(int) * 40 + df["TrendRun"].astype(int) * 30
     def classify(score):
         if score >= 70:
@@ -578,6 +690,95 @@ def backtest_risk_accuracy(df):
     return total, accuracy
 
 
+def backtest_trade_performance(df):
+    trades = []
+
+    for i in range(len(df) - 12):
+        row = df.iloc[i]
+
+        if row["RiskScore"] >= 70:
+            entry = row["Close"]
+            sl = row["Low"]
+            risk = entry - sl
+
+            if risk <= 0:
+                continue
+
+            target = entry + (2 * risk)
+
+            future = df.iloc[i+1:i+11]
+
+            result = None
+            r_multiple = 0
+
+            for _, frow in future.iterrows():
+                if frow["Low"] <= sl:
+                    result = "SL Hit"
+                    r_multiple = -1
+                    break
+                if frow["High"] >= target:
+                    result = "Target Hit"
+                    r_multiple = 2
+                    break
+
+            if result:
+                trades.append(r_multiple)
+
+    if not trades:
+        return 0, 0, 0
+
+    wins = [t for t in trades if t > 0]
+    win_rate = (len(wins) / len(trades)) * 100
+    avg_r = sum(trades) / len(trades)
+
+    return len(trades), round(win_rate, 2), round(avg_r, 2)
+
+
+def backtest_trade_performance(df):
+    trades = []
+
+    for i in range(len(df) - 12):
+        row = df.iloc[i]
+
+        if row["RiskScore"] >= 70:
+            entry = row["Close"]
+            sl = row["Low"]
+            risk = entry - sl
+
+            if risk <= 0:
+                continue
+
+            target = entry + (2 * risk)
+
+            future = df.iloc[i+1:i+11]
+
+            result = None
+            r_multiple = 0
+
+            for _, frow in future.iterrows():
+                if frow["Low"] <= sl:
+                    result = "SL Hit"
+                    r_multiple = -1
+                    break
+                if frow["High"] >= target:
+                    result = "Target Hit"
+                    r_multiple = 2
+                    break
+
+            if result:
+                trades.append(r_multiple)
+
+    if not trades:
+        return 0, 0, 0
+
+    wins = [t for t in trades if t > 0]
+    win_rate = (len(wins) / len(trades)) * 100
+    avg_r = sum(trades) / len(trades)
+
+    return len(trades), round(win_rate, 2), round(avg_r, 2)
+
+
+
 # ================= ML RISK PREDICTION MODEL =================
 from sklearn.ensemble import RandomForestClassifier
 
@@ -610,216 +811,109 @@ def predict_next_risk(model, latest_row):
 
     return "High Chance of Fall 📉" if pred == 1 else "Low Risk of Fall 📈"
 
-# =============================================================
-# ============ RISK ENGINE + EXPLAINABLE AI + ML =============
-# =============================================================
+# ---------------- TABS ----------------
+(tab_setup, tab_risk, tab_watch, tab_fii, tab_adv, tab_hype, tab_fundamentals, tab_portfolio) = st.tabs(
+    [
+        "📉 Candlesticks & Setup",
+        "🚨 Operator Risk Scanner",
+        "📋 Multi-Stock & Sector Risk",
+        "💰 FII / DII Flows",
+        "🧬 Advanced Forensics",
+        "🔥 Market Hype",
+        "📚 Fundamentals",
+        "🧠 Portfolio AI"
+    ]
+)
 
-df = calc_risk_from_raw(data_raw).reset_index()
-df["CandleTag"] = df.apply(tag_candle, axis=1)
+# ---------------- TAB 1: Candles & Setup ----------------
+with tab_setup:
+    st.subheader("Chart Setup")
+    col_l, col_r = st.columns([1.3, 1])
+    with col_l:
+        symbol = st.text_input("Stock symbol (e.g., RELIANCE.NS)", value="RELIANCE.NS")
+        period = st.selectbox("History period", ["5d", "1mo", "3mo", "6mo", "1y"], index=2)
+        interval = st.selectbox("Candle timeframe", ["5m", "15m", "30m", "60m", "1d"], index=4)
+    with col_r:
+        st.markdown("**Notes**")
+        st.markdown("- Use `.NS` for NSE, `.BO` for BSE.")
+        st.markdown("- Intraday intervals (5m..60m) work best with short periods.")
+        st.markdown("- Daily candles work with 3mo+.")
+    
 
-# ---------------- EXPLAINABLE AI VALUES ----------------
-index_score = df["RiskScore"].iloc[-1]
-
-rsi_value = df['RSI'].iloc[-1] if 'RSI' in df.columns else 50
-macd_value = df['MACD'].iloc[-1] if 'MACD' in df.columns else 0
-volatility_value = df['PctChange'].abs().mean()
-fii_flow = 0
-
-reasons = explain_risk_with_system_features(df)
-
-latest = df.iloc[-1]
-problems = market_problem_mapper(df, latest)
-
-# ---------------- ML MODEL ----------------
-ml_model = train_risk_model(df)
-ml_prediction = predict_next_risk(ml_model, df.iloc[-1])
-
-# =============================================================
-# ================= AI / ML STOCK RISK REPORT ENGINE =================
-
-def compute_volatility_risk(df):
-    latest_risk = df["RiskScore"].iloc[-1]
-
-    # MASTER CONTROL
-    if latest_risk >= 70:
-        return "High"
-
-    vol = df["PctChange"].abs().mean()
-    if vol > 3:
-        return "High"
-    elif vol > 1.5:
-        return "Medium"
+    if not symbol.strip():
+        st.warning("Enter a valid stock symbol to load the chart.")
     else:
-        return "Low"
+        try:
+            data_raw = yf.download(symbol.strip(), period=period, interval=interval, progress=False)
+        except Exception as e:
+            st.error(f"Failed to fetch data: {e}")
+            st.stop()
+        if data_raw is None or data_raw.empty:
+            st.error("No data returned. Try another symbol / period / timeframe.")
+            st.stop()
+        # flatten multiindex columns if present
+        if isinstance(data_raw.columns, pd.MultiIndex):
+            data_raw.columns = [c[0] for c in data_raw.columns]
+        data = data_raw.reset_index()
+        time_col = data.columns[0]
+        # store in session
+        st.session_state["symbol"] = symbol.strip()
+        st.session_state["data_raw"] = data_raw
+        st.session_state["data"] = data
+        st.session_state["time_col"] = time_col
+        st.markdown("""
+### 🕯️ How to Read This Chart
 
+This chart is not for predicting price.
 
-def compute_bubble_risk(df):
-    latest_risk = df["RiskScore"].iloc[-1]
+It is for verifying whether the price movement is **natural** or **manipulated**.
 
-    # MASTER CONTROL
-    if latest_risk >= 70:
-        return "High"
+🔹 Sudden big candles with high volume → suspicious activity  
+🔹 Smooth movement with steady volume → organic price action  
 
-    ma30 = df["Close"].rolling(30).mean().iloc[-1]
-    price = df["Close"].iloc[-1]
+Use this to judge **price honesty**, not direction.
+""")
 
-    if price > ma30 * 1.25:
-        return "High"
-    elif price > ma30 * 1.10:
-        return "Medium"
-    else:
-        return "Low"
-
-
-def compute_fundamental_risk(info):
-    try:
-        pe = info.get("trailingPE", 0) or 0
-        roe = info.get("returnOnEquity", 0) or 0
-        debt = info.get("debtToEquity", 0) or 0
-
-        score = 0
-        if pe > 40:
-            score += 1
-        if roe < 0.10:
-            score += 1
-        if debt > 1:
-            score += 1
-
-        if score >= 2:
-            return "High"
-        elif score == 1:
-            return "Medium"
+        st.subheader("📊 Candlestick Chart")
+        # robust candlestick plotting
+        df_plot = data.copy()
+        if set(["Open", "High", "Low", "Close"]).issubset(df_plot.columns):
+            fig = go.Figure(data=[go.Candlestick(
+                x=df_plot[time_col],
+                open=df_plot["Open"],
+                high=df_plot["High"],
+                low=df_plot["Low"],
+                close=df_plot["Close"],
+                increasing_line_color="#33aa44",
+                decreasing_line_color="#d32f2f"
+            )])
+            fig.update_layout(template="plotly_dark", height=520, xaxis_title="Time", yaxis_title="Price")
+            st.plotly_chart(fig, use_container_width=True, key=f"top_candle_{symbol.strip()}")
+            with st.expander("📄 Show OHLCV data"):
+                st.dataframe(df_plot, use_container_width=True)
         else:
-            return "Low"
-    except:
-        return "Unknown"
-
-
-def generate_stock_risk_report(df, info, integrity_score, problems, ml_prediction):
-    latest = df.iloc[-1]
-    risk_score = latest["RiskScore"]
-
-    # ---------------- OPERATOR RISK ----------------
-    if risk_score >= 70:
-        operator_risk = "High"
-    elif risk_score >= 40:
-        operator_risk = "Medium"
-    else:
-        operator_risk = "Low"
-
-    # ---------------- OTHER RISKS ----------------
-    volatility_risk = compute_volatility_risk(df)
-    bubble_risk = compute_bubble_risk(df)
-    fundamental_risk = compute_fundamental_risk(info)
-
-    # ---------------- SMART VERDICT LOGIC ----------------
-    # Verdict must depend on risk engines first, not text
-
-    risks = [operator_risk, volatility_risk, bubble_risk, fundamental_risk]
-
-    high = risks.count("High")
-    medium = risks.count("Medium")
-
-    if high >= 3:
-        verdict = "EXTREME RISK — Multiple Risk Factors Aligned"
-
-    elif high == 2:
-        verdict = "HIGH RISK — Strong Warning Signals"
-
-    elif high == 1 and medium >= 1:
-        verdict = "MODERATE RISK — Mixed Signals Present"
-
-    elif integrity_score < 60:
-        verdict = "MODERATE RISK — Weak Price Integrity"
-
-    elif "high chance of fall" in ml_prediction.lower():
-        verdict = "MODERATE RISK — Bearish Probability Ahead"
-
-    else:
-        verdict = "LOW RISK — Price Action Looks Organic"
-
-    return {
-        "Operator Risk": operator_risk,
-        "Volatility Risk": volatility_risk,
-        "Bubble Risk": bubble_risk,
-        "Fundamental Risk": fundamental_risk,
-        "Final Verdict": verdict,
-    }
-
-    # ================= MASTER CONTROL =================
-    # If operator manipulation is High, all other risks are automatically serious
-    if operator_risk == "High":
-        return {
-            "Operator Risk": "High",
-            "Volatility Risk": "High",
-            "Bubble Risk": "High",
-            "Fundamental Risk": "Check Fundamentals",
-            "Final Verdict": "EXTREME RISK — Operator Activity Detected",
-        }
-    # ==================================================
-
-    volatility_risk = compute_volatility_risk(df)
-    bubble_risk = compute_bubble_risk(df)
-    fundamental_risk = compute_fundamental_risk(info)
-
-    risks = [operator_risk, volatility_risk, bubble_risk, fundamental_risk]
-    high_count = risks.count("High")
-
-    if high_count >= 3:
-        verdict = "EXTREME RISK — Avoid Entry"
-    elif high_count == 2:
-        verdict = "HIGH RISK — Trade Carefully"
-    elif "High" in risks:
-        verdict = "MODERATE RISK — Observe"
-    else:
-        verdict = "LOW RISK — Safe Zone"
-
-    return {
-        "Operator Risk": operator_risk,
-        "Volatility Risk": volatility_risk,
-        "Bubble Risk": bubble_risk,
-        "Fundamental Risk": fundamental_risk,
-        "Final Verdict": verdict,
-    }
-# =====================================================================
-
-
-def alert_engine(df):
-    alerts = []
-
-    latest = df.iloc[-1]
-
-    # Manipulation alert
-    if latest["RiskScore"] >= 70:
-        alerts.append(("🔴 HIGH MANIPULATION", "Possible operator activity detected"))
-
-    # Volume spike
-    if latest["Volume"] > 1.8 * df["Volume"].rolling(20).mean().iloc[-1]:
-        alerts.append(("🟠 VOLUME SPIKE", "Unusual volume activity"))
-
-    return alerts
-
-
-
-
-# ---------------- TAB 2: RISK ----------------
-st.markdown("### 🚨 Alerts Engine")
-
-alerts = alert_engine(df)
-
-if not alerts:
-    st.success("🟢 No critical alerts")
-else:
-    for level, msg in alerts:
-        st.error(f"{level}: {msg}")
-
-st.markdown("### 🕯 Smart Candle Tags")
-st.dataframe(df[[time_col, "Close", "Volume", "RiskScore", "CandleTag"]])
-
-
+            st.info("Insufficient OHLC data for candlestick chart.")
+    # ================= tab one ends here  =================
 with tab_risk:
-    st.subheader("Risk Snapshot & Manipulation Meter")
+    if "data_raw" not in st.session_state:
+        st.warning("Load a chart in Tab 1 first.")
+        st.stop()
+
+    symbol = st.session_state["symbol"]
+    data_raw = st.session_state["data_raw"]
+    data = st.session_state["data"]
+    time_col = st.session_state["time_col"]
+
+    df = calc_risk_from_raw(data_raw).reset_index()
+    df["CandleTag"] = df.apply(tag_candle, axis=1)
+
+    reasons = explain_risk_with_system_features(df)
     latest = df.iloc[-1]
+    problems = market_problem_mapper(df, latest)
+
+    ml_model = train_risk_model(df)
+    ml_prediction = predict_next_risk(ml_model, latest)
+    
     colA, colB, colC, colD = st.columns(4)
     with colA:
         st.markdown("**Latest Risk**")
@@ -829,7 +923,7 @@ with tab_risk:
         max_row = df.loc[max_idx]
         st.markdown("**Peak Risk in Selected Period**")
         st.write(f"Score **{int(max_row['RiskScore'])}** on **{pd.to_datetime(max_row[time_col]).date()}**")
-        st.markdown("---")
+        
 
     st.markdown("### 🔍 Why this Risk Score?")
     for r in reasons:
@@ -841,8 +935,46 @@ with tab_risk:
 
     st.markdown("### 🤖 ML Prediction")
     st.info(ml_prediction)
+    # ---------------- TAB 2: RISK ----------------
+    st.markdown("### 🚨 Alerts Engine")
 
-    st.markdown("---")
+    # Define a simple alert_engine function to generate alerts based on risk levels
+    def alert_engine(df):
+        alerts = []
+        latest = df.iloc[-1]
+        if latest["RiskScore"] >= 70:
+            alerts.append(("CRITICAL", "High risk detected! Operator activity likely."))
+        elif latest["RiskScore"] >= 40:
+            alerts.append(("WARNING", "Medium risk: Unstable price structure."))
+        # Add more alert rules as needed
+        return alerts
+
+    alerts = alert_engine(df)
+
+    if not alerts:
+        st.success("🟢 No critical alerts")
+    else:
+        for level, msg in alerts:
+            st.error(f"{level}: {msg}")
+    st.markdown("### 🕯 Smart Candle Tags")
+    st.dataframe(df[[time_col, "Close", "Volume", "RiskScore", "CandleTag"]])
+    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+    st.subheader("🚨 Risk Snapshot & Manipulation Meter")
+    st.markdown("""
+### 🚨 What is this Risk Meter?
+
+This section tells you **whether operators / smart money are influencing the price**.
+
+It does NOT tell buy or sell.
+
+It tells:
+- Is the move natural?
+- Is retail getting trapped?
+- Is volume supporting the move?
+
+👉 If Risk is HIGH → Avoid the stock  
+👉 If Risk is LOW → Price action looks organic
+""")
 
     def compute_integrity_score(df_local: pd.DataFrame) -> int:
         if df_local.empty:
@@ -940,8 +1072,20 @@ with tab_risk:
         st.markdown("**Manipulation Index (0–100)**")
         color_emoji = "🟢" if manip_idx < 40 else "🟠" if manip_idx < 70 else "🔴"
         st.markdown(f"{color_emoji} **{manip_idx} — {manip_label}**")
+        st.markdown("""
+### 🧠 How to read this?
 
-    st.markdown("---")
+**Integrity Score**
+- 80–100 → Price movement is clean and natural
+- 60–80 → Slight operator footprints
+- Below 60 → Price action is suspicious
+
+**Manipulation Index**
+- 🟢 Low → Normal trading behaviour
+- 🟠 Medium → Be cautious, something unusual
+- 🔴 High → Strong operator activity, avoid entry
+""")
+
     st.markdown("### 🔍 Smart Operator Summary")
     summary_lines = [
         f"{symbol.upper()} closed at **{latest['Close']:.2f}**, daily move **{latest['PctChange']:.2f}%**.",
@@ -965,85 +1109,11 @@ with tab_risk:
     else:
         summary_lines.append("🟢 No strong manipulation cluster.")
     st.markdown("\n\n".join(summary_lines))
-    # ================= STOCK RISK REPORT DISPLAY =================
-
-st.markdown("## 🧠 AI Stock Risk Report")
-
-try:
-    yf_info = yf.Ticker(symbol).info
-except:
-    yf_info = {}
-
-info = yf_info
-integrity_score = int(df["RiskScore"].mean())
-
-report = generate_stock_risk_report(
-    df,
-    info,
-    integrity_score,
-    problems,
-    ml_prediction
-)
-
-c1, c2, c3, c4 = st.columns(4)
-
-c1.metric("Operator Risk", report["Operator Risk"])
-c2.metric("Volatility Risk", report["Volatility Risk"])
-c3.metric("Bubble Risk", report["Bubble Risk"])
-c4.metric("Fundamental Risk", report["Fundamental Risk"])
-
-st.markdown(f"### 🧾 Final Verdict: **{report['Final Verdict']}**")
-st.markdown("## 🤖 ML Prediction")
-st.success(f"Next 3 candles prediction: **{ml_prediction}**")
-
-# ==============================================================
-
-st.markdown("### 📈 Suspicion Timeline (Risk Score)")
-fig_risk = go.Figure([go.Scatter(x=df[time_col], y=df["RiskScore"], mode="lines+markers", line=dict(color="#d32f2f"))])
-fig_risk.update_layout(template="plotly_dark", height=320)
-st.plotly_chart(fig_risk, use_container_width=True, key=f"risk_plot_{symbol}")
-
-st.markdown("### 🔢 Candle-wise risk table")
-df_show = df[[time_col, "Close", "Volume", "PctChange", "VolumeSpike", "PriceSpike", "TrendRun", "RiskScore", "RiskLevel"]].copy()
-df_show["PctChange"] = df_show["PctChange"].round(2)
-for coln in ["VolumeSpike", "PriceSpike", "TrendRun"]:
-    df_show[coln] = df_show[coln].map({True: "Yes", False: "No"})
-st.dataframe(df_show, use_container_width=True)
-st.download_button("Download risk table CSV", df_show.to_csv(index=False).encode("utf-8"), f"risk_table_{symbol}.csv", "text/csv", key=f"download_risk_table_{symbol}")
-total, accuracy = backtest_risk_accuracy(df)
-
-st.markdown("### 📈 Risk Backtesting")
-st.write(f"Samples: **{total}**")
-st.write(f"Accuracy: **{accuracy:.2f}%**")
-
-if accuracy > 60:
-    st.success("✅ Indicator is useful")
-else:
-    st.warning("⚠️ Indicator is noisy")
-
-
-# ---------------- TAB 3: WATCHLIST ----------------
-st.markdown("### ⭐ Persistent Watchlist")
-
-add_col, remove_col = st.columns(2)
-
-with add_col:
-    new_stock = st.text_input("Add stock to watchlist", key="add_watch")
-    if st.button("➕ Add"):
-        if new_stock and new_stock.upper() not in st.session_state.watchlist:
-            st.session_state.watchlist.append(new_stock.upper())
-
-with remove_col:
-    if st.session_state.watchlist:
-        remove_stock = st.selectbox("Remove stock", st.session_state.watchlist)
-        if st.button("➖ Remove"):
-            st.session_state.watchlist.remove(remove_stock)
-
-st.markdown("**Your Watchlist:**")
-st.write(st.session_state.watchlist)
-
+    
+    #---------------------tab 2 ends here---------------------
 with tab_watch:
     st.subheader("Watchlist Risk & Sector View")
+    
     watchlist_input = st.text_input("Watchlist symbols (comma separated)", value="RELIANCE.NS, TCS.NS, HDFCBANK.NS, ADANIENT.NS")
     symbols_list = [s.strip() for s in watchlist_input.split(",") if s.strip()]
     rows = []
@@ -1066,23 +1136,59 @@ with tab_watch:
     else:
         watch_df = pd.DataFrame(rows).sort_values("RiskScore", ascending=False).reset_index(drop=True)
         st.dataframe(watch_df, use_container_width=True)
-        st.download_button("Download watchlist CSV", df_to_csv_bytes(watch_df), f"watchlist_{symbol}.csv", "text/csv", key=f"download_watchlist_{symbol}")
+        st.download_button(
+    "Download snapshot CSV",
+    df_to_csv_bytes(watch_df),
+    "snapshot.csv",
+    "text/csv",
+    key="btn_snapshot_csv_watchlist"
+)
         sector_risk = watch_df.groupby("Sector")["RiskScore"].mean().reset_index()
         if not sector_risk.empty:
             fig_sec = go.Figure([go.Bar(x=sector_risk["Sector"], y=sector_risk["RiskScore"], marker=dict(color=["#d32f2f" if v >= 70 else "#ffcc33" if v >= 40 else "#33dd77" for v in sector_risk["RiskScore"]]))])
             fig_sec.update_layout(template="plotly_dark", height=380, xaxis_title="Sector", yaxis_title="Average Risk Score")
             st.plotly_chart(fig_sec, use_container_width=True, key=f"sector_risk_{symbol}")
+        st.markdown("### ⭐ Persistent Watchlist")
+
+    add_col, remove_col = st.columns(2)
+
+    with add_col:
+        new_stock = st.text_input("Add stock to watchlist", key="add_watch")
+        if st.button("➕ Add"):
+            if new_stock and new_stock.upper() not in st.session_state.watchlist:
+                st.session_state.watchlist.append(new_stock.upper())
+
+    with remove_col:
+        if st.session_state.watchlist:
+            remove_stock = st.selectbox("Remove stock", st.session_state.watchlist)
+            if st.button("➖ Remove"):
+                st.session_state.watchlist.remove(remove_stock)
+
+    st.markdown("**Your Watchlist:**")
+    st.write(st.session_state.watchlist)    
 
 # ---------------- TAB 4: FII / DII ----------------
 with tab_fii:
     st.subheader("FII / DII Flow Visualisation")
+    st.markdown("""
+### 🏦 What This Means
+
+This shows whether big institutions (FII/DII) are buying or selling.
+
+- If institutions are selling and risk score is high → Stay away.
+- If institutions are buying and risk is low → Strong zone.
+""")
     col_demo, col_upload = st.columns([1, 1])
     with col_demo:
         st.markdown("**Download FII/DII CSV template**")
         template = pd.DataFrame({"Date": ["2025-12-01", "2025-12-02"], "FII": [1000, -500], "DII": [-200, 300]})
         st.download_button("Download FII/DII template", template.to_csv(index=False).encode("utf-8"), f"fii_template_{symbol}.csv", "text/csv", key=f"download_fii_template_{symbol}")
     with col_upload:
-        fii_file = st.file_uploader("Upload FII/DII CSV", type=["csv"], key=f"upload_fii_{symbol}")
+        fii_file = st.file_uploader(
+    "Upload FII/DII CSV",
+    type=["csv"],
+    key="uploader_fii_csv"
+)
     if fii_file is None:
         st.info("Upload CSV with columns Date, FII, DII (optional Net).")
     else:
@@ -1104,6 +1210,22 @@ with tab_fii:
 # ---------------- TAB 5: ADVANCED FORENSICS ----------------
 with tab_adv:
     st.subheader("Operator Fingerprint & Forensic Analytics")
+    st.markdown("""
+### 🕵️ What is Operator Fingerprint?
+
+This section detects **hidden operator patterns** from price and volume history.
+
+It identifies if the stock has history of:
+
+- **Pump & Dump** → Sudden rise then sharp fall (retail trap)
+- **Accumulation → Spike** → Silent buying before breakout
+- **Volume Crash Selloff** → Heavy dumping with volume
+- **Laddering** → Continuous one-sided move to attract retail
+
+Higher % means this pattern was strongly seen in recent history.
+
+👉 This tells the *character* of the stock, not today's signal.
+""")
     df_for = df.copy()
 
     def operator_fingerprint_scores(df_local: pd.DataFrame) -> Dict[str, int]:
@@ -1136,6 +1258,7 @@ with tab_adv:
             if late["Volume"].mean() > early["Volume"].mean() * 1.4 and (late["Close"].max() / early["Close"].mean() - 1) > 0.12:
                 scores["Accumulation→Spike"] = 70
         return scores
+    
 
     scores = operator_fingerprint_scores(df_for)
     col1, col2 = st.columns(2)
@@ -1151,7 +1274,7 @@ with tab_adv:
         st.write(f"- Integrity Score: **{integrity_val}**")
         st.write(f"- High-risk candles: **{high_days}**, Medium-risk: **{med_days}**")
 
-    st.markdown("---")
+    
     st.markdown("### 🔥 Volume / Activity Heatmap")
     try:
         heat_df = df_for[[time_col, "Volume", "RiskScore"]].copy()
@@ -1168,7 +1291,7 @@ with tab_adv:
     except Exception:
         st.info("Heatmap generation failed for this dataset.")
 
-    st.markdown("---")
+    
 
 # ---------------- TAB 6: FUNDAMENTALS ----------------
 with tab_fundamentals:
@@ -1254,10 +1377,17 @@ with tab_fundamentals:
                     coln = kcols[i % 3]
                     with coln:
                         st.markdown(f"<div class='fund-card'><div style='font-size:12px;color:#bdbdbd'>{k}</div><div style='font-size:16px'>{v}</div></div>", unsafe_allow_html=True)
-                st.markdown("---")
+                
+                snap_df = pd.DataFrame({"Key": list(snapshot.keys()), "Value": list(snapshot.values())})
                 snap_df = pd.DataFrame({"Key": list(snapshot.keys()), "Value": list(snapshot.values())})
                 st.dataframe(snap_df, use_container_width=True)
-                st.download_button("Download snapshot CSV", df_to_csv_bytes(snap_df), f"fund_snapshot_{f_symbol}.csv", "text/csv", key=f"download_snapshot_{f_symbol}")
+                st.download_button(
+    "Download snapshot CSV",
+    df_to_csv_bytes(snap_df),
+    "snapshot.csv",
+    "text/csv",
+    key="btn_snapshot_csv_fundamentals"
+)
 
                 # --- Price & multi-horizon charts (robust) ---
                 st.markdown("### Price charts (multi-horizon & candlestick)")
@@ -1392,7 +1522,7 @@ with tab_fundamentals:
                     st.info("Quarterly cash flows not available.")
 
                 # --- Key ratios & derived working-cap metrics ---
-                st.markdown("---")
+                
                 st.markdown("### Key ratios & derived working-cap metrics")
                 derived = {}
                 if fmp_income is not None and fmp_bs is not None:
@@ -1460,7 +1590,7 @@ with tab_fundamentals:
                 dd4.metric("Cash Conversion Cycle", f"{derived.get('CCC','—'):.1f}" if derived.get('CCC') else "—")
 
                 # --- Pros & Cons ---
-                st.markdown("---")
+                
                 st.markdown("### Pros & Cons (auto summary)")
                 pros = []
                 cons = []
@@ -1516,7 +1646,7 @@ with tab_fundamentals:
                         st.write("- " + c)
 
                 # --- Peer comparison ---
-                st.markdown("---")
+                
                 st.markdown("### Peer comparison")
                 peer_input = st.text_input("Enter peer symbols separated by comma (e.g., TCS.NS,HCLTECH.NS)", value=f"{f_symbol.strip().upper()}", key=f"peer_input_{f_symbol}")
                 if st.button("Fetch peers", key=f"peers_fetch_{f_symbol}"):
@@ -1539,10 +1669,16 @@ with tab_fundamentals:
                     if rows_peer:
                         peer_df = pd.DataFrame(rows_peer)
                         st.dataframe(peer_df, use_container_width=True)
-                        st.download_button("Download peer CSV", df_to_csv_bytes(peer_df), f"peer_compare_{f_symbol}.csv", "text/csv", key=f"download_peer_{f_symbol}")
+                        st.download_button(
+    "Download peer CSV",
+    df_to_csv_bytes(peer_df),
+    "peers.csv",
+    "text/csv",
+    key="btn_peer_csv"
+)
 
                 # --- Growth metrics (CAGR) ---
-                st.markdown("---")
+                
                 st.markdown("### Growth metrics (Price CAGR)")
                 if price_df is not None and not price_df.empty:
                     pf = price_df.copy()
@@ -1568,7 +1704,7 @@ with tab_fundamentals:
                     st.info("Not enough price history to compute CAGR.")
 
                 # --- Cash flows summary ---
-                st.markdown("---")
+                
                 st.markdown("### Cash flow summary (annual / reported)")
                 if fmp_cf is not None and not fmp_cf.empty:
                     try:
@@ -1587,7 +1723,7 @@ with tab_fundamentals:
                     st.info("Cashflow not available from current sources. Use FMP key or upload reports.")
 
                 # --- Shareholding pattern (Promoters) ---
-                st.markdown("---")
+                
                 st.markdown("### Shareholding pattern (Promoters etc.)")
                 if fmp_share:
                     st.json(fmp_share)
@@ -1595,7 +1731,11 @@ with tab_fundamentals:
                     st.info("Shareholding not available via FMP (or no FMP key). You can upload a CSV below.")
                     share_template = pd.DataFrame({"Quarter": ["Mar-2025", "Dec-2024"], "Promoters": [14.3, 14.6], "FIIs": [30.0, 31.0], "DIIs": [39.0, 38.5], "Public": [16.7, 15.9]})
                     st.download_button("Download shareholding template", share_template.to_csv(index=False).encode("utf-8"), f"share_template_{f_symbol}.csv", "text/csv", key=f"download_share_template_{f_symbol}")
-                    up = st.file_uploader("Upload shareholding CSV (optional)", type=["csv"], key=f"upload_share_{f_symbol}")
+                    up = st.file_uploader(
+    "Upload shareholding CSV",
+    type=["csv"],
+    key="uploader_shareholding"
+)
                     if up:
                         try:
                             shdf = pd.read_csv(up)
@@ -1605,7 +1745,7 @@ with tab_fundamentals:
                             st.error("Failed to read shareholding CSV: " + str(e))
 
                 # --- Recommendation / safety flag (quick) ---
-                st.markdown("---")
+                
                 st.markdown("### Recommendation / Safety flag (quick)")
                 score = 50
                 try:
@@ -1629,6 +1769,7 @@ with tab_fundamentals:
                 st.markdown(f"**Quick score:** {score} → **{rec}**")
 
                 st.success("Fundamentals fetched. Review above and download CSVs if needed.")
+
 # 🔥 Market Hype (Google Trends)
 with tab_hype:
     st.subheader("🔥 Market Attention Tracker")
@@ -1681,6 +1822,175 @@ with tab_hype:
             st.warning("🟠 Moderate attention")
         else:
             st.info("🟢 Low attention → Quiet zone")
+# ================= PORTFOLIO HIDDEN RISK ANALYZER =================
+with tab_portfolio:
+    st.subheader("🧠 Portfolio Hidden Risk Analyzer (Upload Your Portfolio)")
+
+    st.markdown("""
+    Upload your portfolio Excel sheet.  
+    This AI detects hidden **correlation**, **sector concentration**, and tells you **which stock to reduce/exit**.
+    """)
+
+    # ---------- TEMPLATE DOWNLOAD ----------
+    template_df = pd.DataFrame({
+        "StockSymbol": ["HDFCBANK.NS", "ICICIBANK.NS", "AXISBANK.NS"],
+        "Quantity": [10, 15, 12],
+        "BuyPrice": [1500, 900, 1000]
+    })
+
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        template_df.to_excel(writer, index=False)
+    buf.seek(0)
+
+    st.download_button(
+        "📥 Download Portfolio Template",
+        buf,
+        file_name="portfolio_template.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="portfolio_template_download"
+    )
+
+    uploaded_file = st.file_uploader(
+        "📤 Upload your portfolio Excel",
+        type=["xlsx"],
+        key="portfolio_file_upload"
+    )
+
+    # ---------- ANALYSIS FUNCTIONS ----------
+
+    def analyze_portfolio(df_portfolio):
+        symbols = df_portfolio["StockSymbol"].dropna().unique()
+
+        price_frames = []
+        sector_map = {}
+
+        for s in symbols:
+            dfp = yf.download(s, period="1y", interval="1d", progress=False)
+            if dfp.empty or "Close" not in dfp.columns:
+                continue
+
+            temp = dfp[["Close"]].rename(columns={"Close": s})
+            price_frames.append(temp)
+
+            try:
+                info = yf.Ticker(s).info
+                sector_map[s] = info.get("sector", "Unknown")
+            except:
+                sector_map[s] = "Unknown"
+
+        if len(price_frames) < 2:
+            return None, None, None, 0.0, None
+
+        df_prices = pd.concat(price_frames, axis=1).dropna()
+        returns = df_prices.pct_change().dropna()
+        corr_matrix = returns.corr()
+
+        # Average correlation
+        upper = corr_matrix.where(
+            np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
+        )
+        vals = upper.stack().values
+        avg_corr = float(vals.mean()) if len(vals) > 0 else 0.0
+
+        sectors = pd.Series(sector_map)
+        sector_counts = sectors.value_counts(normalize=True) * 100
+
+        return df_prices, returns, corr_matrix, avg_corr, sector_counts
+
+
+    def portfolio_exit_advice(returns_df, corr_matrix):
+        volatility = returns_df.std()
+        scores = {}
+
+        for s in corr_matrix.columns:
+            others = corr_matrix[s].drop(labels=[s])
+            corr_mean = float(others.mean())
+            vol = float(volatility.get(s, 0))
+            scores[s] = (corr_mean * 0.7) + (vol * 0.3)
+
+        risk_df = (
+            pd.DataFrame(scores.items(), columns=["Stock", "RiskScore"])
+            .sort_values("RiskScore", ascending=False)
+            .reset_index(drop=True)
+        )
+
+        worst_stock = risk_df.iloc[0]["Stock"]
+        return risk_df, worst_stock
+
+
+    # ---------- PROCESS FILE ----------
+    if uploaded_file:
+        port_df = pd.read_excel(uploaded_file)
+
+        if not {"StockSymbol", "Quantity", "BuyPrice"}.issubset(port_df.columns):
+            st.error("❌ Invalid format. Use the template.")
+            st.stop()
+
+        st.success("✅ Portfolio loaded successfully")
+
+        df_prices, returns, corr_matrix, avg_corr, sector_counts = analyze_portfolio(port_df)
+
+        if corr_matrix is None:
+            st.error("Need at least 2 valid stocks.")
+            st.stop()
+
+        # ---------- CORRELATION TABLE ----------
+        st.markdown("### 🔗 Stock-to-Stock Correlation (Easy View)")
+
+        corr_pairs = []
+        for i in corr_matrix.columns:
+            for j in corr_matrix.columns:
+                if i != j:
+                    corr_pairs.append((i, j, round(float(corr_matrix.loc[i, j]), 2)))
+
+        corr_df = (
+            pd.DataFrame(corr_pairs, columns=["Stock A", "Stock B", "Correlation"])
+            .sort_values("Correlation", ascending=False)
+            .drop_duplicates()
+            .reset_index(drop=True)
+        )
+
+        st.dataframe(corr_df, use_container_width=True)
+
+        # ---------- CORRELATION INSIGHT ----------
+        st.markdown("### 🤖 Hidden Correlation Insight")
+
+        if avg_corr > 0.75:
+            st.error(f"🔴 Very High Correlation ({avg_corr:.2f}) — All stocks may fall together.")
+        elif avg_corr > 0.5:
+            st.warning(f"🟠 Moderate Correlation ({avg_corr:.2f}) — Partial diversification.")
+        else:
+            st.success(f"🟢 Low Correlation ({avg_corr:.2f}) — Good diversification.")
+
+        # ---------- SECTOR CONCENTRATION ----------
+        st.markdown("### 🏭 Sector Concentration")
+        st.dataframe(sector_counts)
+
+        top_sector = sector_counts.idxmax()
+        top_pct = sector_counts.max()
+
+        if top_pct > 60:
+            st.error(f"🔴 {top_pct:.1f}% in {top_sector} — Sector crash = portfolio crash.")
+        elif top_pct > 40:
+            st.warning(f"🟠 {top_pct:.1f}% in {top_sector} — High sector dependency.")
+        else:
+            st.success("🟢 Well diversified across sectors.")
+
+        # ---------- EXIT ADVICE ----------
+        risk_df, worst_stock = portfolio_exit_advice(returns, corr_matrix)
+
+        st.markdown("### 📉 Individual Stock Risk Contribution")
+        st.dataframe(risk_df, use_container_width=True)
+
+        st.markdown("### 🚨 AI Exit / Reduce Suggestion")
+        st.error(f"""
+    ✂️ **Reduce / Exit: {worst_stock}**
+
+    This stock is highly correlated and volatile.  
+    If market falls, this stock will drag your portfolio first.
+    """)            
+
 # ---------------- AUTO REFRESH ----------------
 if auto_refresh:
     time.sleep(60)

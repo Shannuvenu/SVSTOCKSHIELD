@@ -7,3 +7,4 @@ requests
 supabase
 pytrends
 scikit-learn
+openpyxl
