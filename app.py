@@ -3,6 +3,7 @@
 # pip install streamlit yfinance pandas plotly requests numpy python-dotenv
 # Optional for social hype: pip install snscrape vaderSentiment
 
+from http import cookies
 import os
 import time
 from io import BytesIO
@@ -20,6 +21,15 @@ import requests
 import openpyxl
 from supabase import create_client
 import streamlit as st
+from streamlit_cookies_manager import EncryptedCookieManager
+
+cookies = EncryptedCookieManager(
+    prefix="svstockshield_",
+    password="supersecretkey"
+)
+
+if not cookies.ready():
+    st.stop()
 def portfolio_correlation_analysis(symbols):
     price_data = {}
 
@@ -98,14 +108,21 @@ def auth_ui():
                 })
 
                 if res.user:
-                    st.session_state["user"] = res.user
+                    cookies["access_token"] = res.session.access_token
+                    cookies["refresh_token"] = res.session.refresh_token
+                    cookies.save()
                     st.rerun()
                 else:
                     st.error("Login failed")
 
         except Exception as e:
             st.error(str(e))
-if "user" not in st.session_state:
+if "access_token" in cookies:
+    supabase.auth.set_session(
+        cookies["access_token"],
+        cookies["refresh_token"]
+    )
+else:
     auth_ui()
     st.stop()
 with st.expander("📘 How to Use SV STOCKSHIELD (Read Once)"):
