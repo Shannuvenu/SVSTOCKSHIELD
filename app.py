@@ -21,15 +21,10 @@ import requests
 import openpyxl
 from supabase import create_client
 import streamlit as st
-from streamlit_cookies_manager import EncryptedCookieManager
 
-cookies = EncryptedCookieManager(
-    prefix="svstockshield_",
-    password="supersecretkey"
-)
+st.set_page_config(page_title="S V STOCKSHIELD", page_icon="📈", layout="wide")
 
-if not cookies.ready():
-    st.stop()
+
 def portfolio_correlation_analysis(symbols):
     price_data = {}
 
@@ -81,48 +76,39 @@ supabase = create_client(
 )
 
 def auth_ui():
-    st.title("🔐 Login to SV STOCKSHIELD")
+    st.markdown("<h2 style='text-align:center'>Login to SV STOCKSHIELD</h2>", unsafe_allow_html=True)
 
-    mode = st.radio("Choose", ["Login", "Sign Up"])
-    email = st.text_input("Email")
-    password = st.text_input("Password", type="password")
+    mode = st.radio("", ["Login", "Sign Up"], key="auth_mode")
+    email = st.text_input("Email", key="auth_email")
+    password = st.text_input("Password", type="password", key="auth_pass")
 
-    if st.button(mode):
+    if st.button(mode, key="auth_btn"):
         try:
             if mode == "Sign Up":
                 res = supabase.auth.sign_up({
                     "email": email,
                     "password": password
                 })
-
-                # ✅ THIS IS THE IMPORTANT PART
                 if res.user:
                     st.success("Signup successful. Please login.")
                 else:
                     st.error("Signup failed")
 
-            else:  # Login
+            else:
                 res = supabase.auth.sign_in_with_password({
                     "email": email,
                     "password": password
                 })
 
                 if res.user:
-                    cookies["access_token"] = res.session.access_token
-                    cookies["refresh_token"] = res.session.refresh_token
-                    cookies.save()
+                    st.session_state["user"] = res.user
                     st.rerun()
                 else:
                     st.error("Login failed")
 
         except Exception as e:
             st.error(str(e))
-if "access_token" in cookies:
-    supabase.auth.set_session(
-        cookies["access_token"],
-        cookies["refresh_token"]
-    )
-else:
+if "user" not in st.session_state:
     auth_ui()
     st.stop()
 with st.expander("📘 How to Use SV STOCKSHIELD (Read Once)"):
